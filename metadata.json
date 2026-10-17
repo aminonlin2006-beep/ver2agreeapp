@@ -1,0 +1,6 @@
+{
+  "name": "مدیریت مزرعه",
+  "description": "سامانه جامع مدیریت مزرعه و نهالستان برای ثبت مزارع، قطعات، اشخاص، برچسب‌ها و پشتیبان‌گیری",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
