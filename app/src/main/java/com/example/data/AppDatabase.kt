@@ -31,6 +31,8 @@ import com.example.data.entity.TagEntity
 import com.example.data.entity.TaskEntity
 import com.example.data.entity.WageRateEntity
 import com.example.data.entity.WaitingListEntity
+import com.example.data.entity.ProductEntity
+import com.example.data.entity.CropEntity
 
 @Database(
     entities = [
@@ -57,9 +59,11 @@ import com.example.data.entity.WaitingListEntity
         EmploymentEntity::class,
         SalaryRateEntity::class,
         AbsenceEntity::class,
-        SalaryPostingEntity::class
+        SalaryPostingEntity::class,
+        ProductEntity::class,
+        CropEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -393,6 +397,48 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `products` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `createdAt` TEXT NOT NULL,
+                        `updatedAt` TEXT NOT NULL,
+                        `createdBy` TEXT NOT NULL,
+                        `deleted` INTEGER NOT NULL,
+                        `deletedAt` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `crops` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `plotId` TEXT NOT NULL,
+                        `startDate` TEXT NOT NULL,
+                        `endDate` TEXT,
+                        `productIds` TEXT NOT NULL,
+                        `quantity` REAL,
+                        `size` TEXT,
+                        `note` TEXT NOT NULL,
+                        `createdAt` TEXT NOT NULL,
+                        `updatedAt` TEXT NOT NULL,
+                        `createdBy` TEXT NOT NULL,
+                        `deleted` INTEGER NOT NULL,
+                        `deletedAt` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `cropId` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `attendance` ADD COLUMN `cropId` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `piece_work` ADD COLUMN `cropId` TEXT DEFAULT NULL")
+                db.execSQL("ALTER TABLE `expenses` ADD COLUMN `cropId` TEXT DEFAULT NULL")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -400,7 +446,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "farm_manager_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .fallbackToDestructiveMigration(false)
                     .build()
                 INSTANCE = instance

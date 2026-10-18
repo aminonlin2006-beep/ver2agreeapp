@@ -34,6 +34,7 @@ import com.example.ui.MainViewModel
 import com.example.ui.components.ConfirmDialog
 import com.example.ui.components.JalaliDatePickerDialog
 import com.example.ui.components.SendScheduleDialog
+import com.example.ui.components.TaskCompletionDialog
 import com.example.ui.components.TaskFormDialog
 import com.example.ui.theme.ColorDangerRed
 import com.example.ui.theme.ColorNeutralGray
@@ -56,6 +57,7 @@ fun TasksScreen(
     var taskToEdit by remember { mutableStateOf<TaskEntity?>(null) }
     var taskToReschedule by remember { mutableStateOf<TaskEntity?>(null) }
     var taskToDelete by remember { mutableStateOf<TaskEntity?>(null) }
+    var taskToCompleteWithAttendance by remember { mutableStateOf<TaskEntity?>(null) }
     var showSendScheduleDialog by remember { mutableStateOf(false) }
     var showClosedTasksSection by remember { mutableStateOf(false) }
 
@@ -249,7 +251,7 @@ fun TasksScreen(
                         plotsMap = plotsMap,
                         personsMap = personsMap,
                         tagsMap = tagsMap,
-                        onMarkDone = { viewModel.toggleTaskStatus(task.id, "done") },
+                        onMarkDone = { taskToCompleteWithAttendance = task },
                         onMarkCancelled = { viewModel.toggleTaskStatus(task.id, "cancelled") },
                         onReschedule = { taskToReschedule = task },
                         onEdit = { taskToEdit = task },
@@ -401,6 +403,36 @@ fun TasksScreen(
             allPlots = uiState.plots,
             allPersons = uiState.persons,
             onDismiss = { showSendScheduleDialog = false }
+        )
+    }
+
+    // --- TASK COMPLETION & WORKFORCE ATTENDANCE DIALOG ---
+    if (taskToCompleteWithAttendance != null) {
+        TaskCompletionDialog(
+            task = taskToCompleteWithAttendance!!,
+            uiState = uiState,
+            onDismiss = { taskToCompleteWithAttendance = null },
+            onCompleteOnly = {
+                viewModel.toggleTaskStatus(taskToCompleteWithAttendance!!.id, "done")
+                taskToCompleteWithAttendance = null
+            },
+            onCompleteWithAttendance = { date, farmId, plotId, crewId, tagId, lines, note ->
+                viewModel.createAttendance(
+                    date = date,
+                    farmId = farmId,
+                    plotId = plotId,
+                    crewId = crewId,
+                    tagId = tagId,
+                    lines = lines,
+                    headcount = null,
+                    countTicks = null,
+                    foreman = null,
+                    note = note
+                ) {
+                    viewModel.toggleTaskStatus(taskToCompleteWithAttendance!!.id, "done")
+                    taskToCompleteWithAttendance = null
+                }
+            }
         )
     }
 }

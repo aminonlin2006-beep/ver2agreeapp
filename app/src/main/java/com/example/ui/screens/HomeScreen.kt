@@ -7,6 +7,10 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridItemScope
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -27,6 +31,7 @@ import com.example.lib.JalaliDateHelper
 import com.example.lib.NumberFormatHelper
 import com.example.ui.MainUiState
 import com.example.ui.MainViewModel
+import com.example.ui.components.SummaryDashboardComponent
 import com.example.ui.theme.ColorDangerRed
 import com.example.ui.theme.ColorNeutralGray
 import com.example.ui.theme.ColorSuccessGreen
@@ -45,6 +50,8 @@ fun HomeScreen(
     onNavigateToPersons: () -> Unit,
     onNavigateToTags: () -> Unit,
     onNavigateToWorkforce: () -> Unit,
+    onNavigateToExpenses: () -> Unit,
+    onNavigateToCrops: () -> Unit = {},
     onNavigateToLedger: () -> Unit,
     onNavigateToBackup: () -> Unit,
     onNavigateToSettings: () -> Unit
@@ -56,8 +63,9 @@ fun HomeScreen(
     var selectedTileForOptions by remember { mutableStateOf<String?>(null) }
     var showUpdateCard by remember { mutableStateOf(false) }
     var tomorrowCardDismissedTonight by remember { mutableStateOf(false) }
+    var backupReminderDismissedSession by remember { mutableStateOf(false) }
 
-    val showBackupReminder = uiState.unsentChanges > 0 && uiState.lastBackupReminderDate != todayIso
+    val showBackupReminder = (uiState.unsentChanges >= 5 || (uiState.unsentChanges > 0 && uiState.lastBackupReminderDate != todayIso)) && !backupReminderDismissedSession
     val showGuide = uiState.farms.isEmpty() && !uiState.isGuideDismissed
 
     // Check time for "Tomorrow's Tasks" card (Decision 53, 59, 171)
@@ -181,17 +189,23 @@ fun HomeScreen(
             )
         }
     ) { innerPadding ->
-        LazyColumn(
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
             // --- NEWS CARDS ---
+            fun itemFull(content: @Composable LazyGridItemScope.() -> Unit) {
+                item(span = { GridItemSpan(maxLineSpan) }, content = content)
+            }
+
             // 1. Update card
             if (showUpdateCard) {
-                item {
+                itemFull {
                     Card(
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.primaryContainer
@@ -231,7 +245,7 @@ fun HomeScreen(
 
             // 2. Tomorrow's Tasks News Card (کارت کارهای فردا)
             if (showTomorrowTasksCard) {
-                item {
+                itemFull {
                     val countFa = NumberFormatHelper.toPersianDigits(tomorrowTasksCount)
                     Card(
                         colors = CardDefaults.cardColors(
@@ -270,44 +284,96 @@ fun HomeScreen(
                 }
             }
 
-            // 3. Backup Reminder Card
+            // 3. Smart Backup Reminder Card
             if (showBackupReminder) {
-                item {
+                itemFull {
                     val changesFa = NumberFormatHelper.toPersianDigits(uiState.unsentChanges)
                     Card(
+                        shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(
                             containerColor = ColorWarningOrange.copy(alpha = 0.12f)
                         ),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().testTag("smart_backup_reminder_card")
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.CloudUpload,
-                                contentDescription = null,
-                                tint = ColorWarningOrange
-                            )
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "$changesFa تغییر هنوز پشتیبان بیرونی ندارد",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = ColorWarningOrange
-                                )
-                                TextButton(
-                                    onClick = onNavigateToBackup,
-                                    contentPadding = PaddingValues(0.dp)
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .background(ColorWarningOrange.copy(alpha = 0.18f), RoundedCornerShape(10.dp)),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    Text("فرستادن پشتیبان", fontWeight = FontWeight.Bold)
+                                    Icon(
+                                        imageVector = Icons.Default.CloudSync,
+                                        contentDescription = null,
+                                        tint = ColorWarningOrange
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Text(
+                                            text = "پشتیبان‌گیری توصیه می‌شود",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = ColorWarningOrange
+                                        )
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = ColorWarningOrange.copy(alpha = 0.2f)
+                                        ) {
+                                            Text(
+                                                text = "$changesFa تغییر تازه",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                color = ColorWarningOrange,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "داده‌ها فقط روی این گوشی ذخیره هستند؛ جهت ایمنی داده‌ها خروجی پشتیبان بگیرید.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                                IconButton(onClick = {
+                                    backupReminderDismissedSession = true
+                                    viewModel.dismissDailyBackupReminder()
+                                }) {
+                                    Icon(Icons.Default.Close, contentDescription = "بستن")
                                 }
                             }
-                            IconButton(onClick = { viewModel.dismissDailyBackupReminder() }) {
-                                Icon(Icons.Default.Close, contentDescription = "بستن")
+
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Button(
+                                    onClick = onNavigateToBackup,
+                                    colors = ButtonDefaults.buttonColors(containerColor = ColorWarningOrange),
+                                    modifier = Modifier.weight(1f).testTag("backup_now_btn")
+                                ) {
+                                    Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("پشتیبان‌گیری سریع")
+                                }
+                                OutlinedButton(
+                                    onClick = {
+                                        backupReminderDismissedSession = true
+                                        viewModel.dismissDailyBackupReminder()
+                                    }
+                                ) {
+                                    Text("بعداً")
+                                }
                             }
                         }
                     }
@@ -316,7 +382,7 @@ fun HomeScreen(
 
             // --- GUIDE CARD ---
             if (showGuide) {
-                item {
+                itemFull {
                     Card(
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.secondaryContainer
@@ -348,9 +414,19 @@ fun HomeScreen(
                 }
             }
 
+            // --- SUMMARY DASHBOARD COMPONENT (نمای کلی و نمودار وضعیت مزرعه، کارگران و کارها) ---
+            itemFull {
+                SummaryDashboardComponent(
+                    uiState = uiState,
+                    onNavigateToFarms = onNavigateToFarms,
+                    onNavigateToWorkforce = onNavigateToWorkforce,
+                    onNavigateToTasks = onNavigateToTasks
+                )
+            }
+
             // --- TODAY'S TASKS SECTION (کارهای امروز - Decision 143, 282) ---
             if (uiState.isTasksModuleActive) {
-                item {
+                itemFull {
                     Column(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                         modifier = Modifier.fillMaxWidth()
@@ -462,7 +538,8 @@ fun HomeScreen(
             // --- TILES ---
             val activeTiles = uiState.tileOrder.filter { !uiState.hiddenTileKeys.contains(it) }
 
-            items(activeTiles) { tileKey ->
+            items(activeTiles.size) { index ->
+                val tileKey = activeTiles[index]
                 when (tileKey) {
                     "farms" -> {
                         FarmHomeTile(
@@ -499,6 +576,18 @@ fun HomeScreen(
                                 onLongClick = { selectedTileForOptions = "ledger" }
                             )
                         }
+                    }
+                    "expenses" -> {
+                        ExpenseHomeTile(
+                            onClick = onNavigateToExpenses,
+                            onLongClick = { selectedTileForOptions = "expenses" }
+                        )
+                    }
+                    "crops" -> {
+                        CropHomeTile(
+                            onClick = onNavigateToCrops,
+                            onLongClick = { selectedTileForOptions = "crops" }
+                        )
                     }
                     "persons" -> {
                         PersonHomeTile(
@@ -769,24 +858,25 @@ private fun BigHomeCard(
 ) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = containerColor,
-            contentColor = contentColor
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
         ),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(24.dp),
         modifier = Modifier
             .fillMaxWidth()
-            .height(100.dp)
+            .height(130.dp)
             .testTag(testTag)
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick
             )
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp)
+                .padding(8.dp)
         ) {
             Box(
                 contentAlignment = Alignment.Center,
@@ -802,25 +892,47 @@ private fun BigHomeCard(
                     modifier = Modifier.size(32.dp)
                 )
             }
-            Spacer(modifier = Modifier.width(20.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = contentColor.copy(alpha = 0.8f)
-                )
-            }
-            Icon(
-                imageVector = Icons.Default.ArrowBack,
-                contentDescription = null,
-                tint = contentColor.copy(alpha = 0.6f)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
             )
         }
     }
+}
+
+@Composable
+private fun ExpenseHomeTile(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    BigHomeCard(
+        title = "هزینه‌ها",
+        subtitle = "مدیریت هزینه‌های مزرعه",
+        icon = Icons.Default.AttachMoney,
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        testTag = "expense_tile"
+    )
+}
+
+@Composable
+private fun CropHomeTile(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    BigHomeCard(
+        title = "کشت‌ها",
+        subtitle = "مدیریت کشت‌ها و محصولات",
+        icon = Icons.Default.Eco,
+        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        testTag = "crop_tile"
+    )
 }

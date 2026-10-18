@@ -56,6 +56,8 @@ fun FarmManagerApp(viewModel: MainViewModel) {
                 onNavigateToPersons = { navController.navigate("persons") },
                 onNavigateToTags = { navController.navigate("tags") },
                 onNavigateToWorkforce = { navController.navigate("workforce") },
+                onNavigateToExpenses = { navController.navigate("expenses") },
+                onNavigateToCrops = { navController.navigate("crops") },
                 onNavigateToLedger = { navController.navigate("ledger") },
                 onNavigateToBackup = { navController.navigate("backup") },
                 onNavigateToSettings = { navController.navigate("settings") }
@@ -70,6 +72,21 @@ fun FarmManagerApp(viewModel: MainViewModel) {
                 onNavigateToCrewDetail = { crewId ->
                     navController.navigate("crew_detail/$crewId")
                 }
+            )
+        }
+
+        composable("expenses") {
+            ExpenseScreen(
+                uiState = uiState,
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+        composable("crops") {
+            CropsScreen(
+                uiState = uiState,
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 

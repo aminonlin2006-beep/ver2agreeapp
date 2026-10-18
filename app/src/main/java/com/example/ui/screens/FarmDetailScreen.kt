@@ -1,6 +1,7 @@
 package com.example.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -17,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.entity.FarmEntity
 import com.example.data.entity.PlotEntity
+import com.example.lib.NurseryHelper
 import com.example.lib.NumberFormatHelper
 import com.example.ui.MainUiState
 import com.example.ui.MainViewModel
@@ -36,6 +38,18 @@ fun FarmDetailScreen(
     val realPlots = allFarmPlots.filter { !it.isDefault }
     val activeRealPlots = realPlots.filter { it.active }
     val inactiveRealPlots = realPlots.filter { !it.active }
+
+    // Expenses calculation for this farm and plots
+    val farmExpenses = remember(uiState.expenses, farmId) {
+        uiState.expenses.filter { it.farmId == farmId && !it.deleted }
+    }
+    val totalFarmCost = remember(farmExpenses) {
+        farmExpenses.sumOf { it.amount }
+    }
+    val plotExpensesMap = remember(farmExpenses) {
+        farmExpenses.filter { it.plotId != null }.groupBy { it.plotId!! }
+            .mapValues { (_, exps) -> exps.sumOf { it.amount } }
+    }
 
     var showEditFarmDialog by remember { mutableStateOf(false) }
     var showDeleteFarmDialog by remember { mutableStateOf(false) }
@@ -65,15 +79,15 @@ fun FarmDetailScreen(
                 actions = {
                     IconButton(
                         onClick = { showEditFarmDialog = true },
-                        modifier = Modifier.testTag("edit_farm_btn")
+                        modifier = Modifier.testTag("farm_detail_edit_btn")
                     ) {
-                        Icon(Icons.Default.Edit, contentDescription = "ویرایش")
+                        Icon(Icons.Default.Edit, contentDescription = "ویرایش مزرعه")
                     }
                     IconButton(
                         onClick = { showDeleteFarmDialog = true },
-                        modifier = Modifier.testTag("delete_farm_btn")
+                        modifier = Modifier.testTag("farm_detail_delete_btn")
                     ) {
-                        Icon(Icons.Default.Delete, contentDescription = "حذف", tint = ColorDangerRed)
+                        Icon(Icons.Default.Delete, contentDescription = "حذف مزرعه", tint = ColorDangerRed)
                     }
                 }
             )
@@ -86,14 +100,13 @@ fun FarmDetailScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            // --- FARM SUMMARY CARD ---
+            // --- FARM INFO CARD ---
             item {
                 Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
                     shape = RoundedCornerShape(16.dp),
-                    modifier = Modifier.fillMaxWidth()
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(2.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("farm_info_card")
                 ) {
                     Column(modifier = Modifier.padding(16.dp)) {
                         Row(
@@ -102,28 +115,33 @@ fun FarmDetailScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = "اطلاعات مزرعه",
-                                style = MaterialTheme.typography.titleMedium,
+                                text = farm.name,
+                                style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold
                             )
-                            TextButton(onClick = { viewModel.toggleFarmActive(farm) }) {
-                                Text(if (farm.active) "غیرفعال کردن" else "فعال کردن")
-                            }
+                            val statusText = if (farm.active) "فعال" else "غیرفعال"
+                            val statusColor = if (farm.active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                            SuggestionChip(
+                                onClick = {},
+                                label = { Text(statusText, color = statusColor) }
+                            )
                         }
 
                         val areaDisplay = NumberFormatHelper.formatArea(farm.areaM2)
                         if (areaDisplay.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(6.dp))
                             Text(
                                 text = "مساحت: $areaDisplay",
-                                style = MaterialTheme.typography.bodyMedium
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.outline
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
                         }
 
                         val workTypeDisplay = computeFarmWorkTypeDisplay(allFarmPlots)
                         Text(
                             text = "نوع کار: $workTypeDisplay",
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.outline
                         )
 
                         if (farm.ownership != null) {
@@ -155,6 +173,56 @@ fun FarmDetailScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.outline
                             )
+                        }
+                    }
+                }
+            }
+
+            // --- FINANCIAL / EXPENSES SUMMARY CARD ---
+            if (totalFarmCost > 0) {
+                item {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+                        ),
+                        modifier = Modifier.fillMaxWidth().testTag("farm_expenses_summary_card")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(14.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(44.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f),
+                                        RoundedCornerShape(10.dp)
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AccountBalanceWallet,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.tertiary
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "مجموع هزینه‌های ثبت شده برای این مزرعه",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                                Text(
+                                    text = "${NumberFormatHelper.formatTomanFull(totalFarmCost)} (${NumberFormatHelper.formatTomanShort(totalFarmCost)})",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onTertiaryContainer
+                                )
+                            }
                         }
                     }
                 }
@@ -209,8 +277,10 @@ fun FarmDetailScreen(
                 }
             } else {
                 items(activeRealPlots, key = { it.id }) { plot ->
+                    val plotCost = plotExpensesMap[plot.id] ?: 0L
                     PlotItemCard(
                         plot = plot,
+                        plotCost = plotCost,
                         onEdit = { plotToEdit = plot },
                         onToggleActive = { viewModel.togglePlotActive(plot) },
                         onDelete = { plotToDelete = plot }
@@ -253,8 +323,10 @@ fun FarmDetailScreen(
                                         modifier = Modifier.padding(16.dp)
                                     ) {
                                         inactiveRealPlots.forEach { plot ->
+                                            val plotCost = plotExpensesMap[plot.id] ?: 0L
                                             PlotItemCard(
                                                 plot = plot,
+                                                plotCost = plotCost,
                                                 onEdit = { plotToEdit = plot },
                                                 onToggleActive = { viewModel.togglePlotActive(plot) },
                                                 onDelete = { plotToDelete = plot }
@@ -298,26 +370,15 @@ fun FarmDetailScreen(
 
     // Delete Farm Dialog
     if (showDeleteFarmDialog) {
-        val plotsCount = realPlots.size
-        val message = if (plotsCount > 0) {
-            val countFa = NumberFormatHelper.toPersianDigits(plotsCount)
-            "این مزرعه $countFa قطعه دارد که همه حذف می‌شوند. آیا مطمئنید؟"
-        } else {
-            "آیا از حذف این مزرعه مطمئن هستید؟"
-        }
-
         ConfirmDialog(
             title = "حذف مزرعه",
-            message = message,
+            message = "آیا از حذف مزرعه‌ی «${farm.name}» مطمئن هستید؟ با حذف مزرعه، تمام قطعه‌های آن نیز حذف خواهند شد.",
             confirmText = "حذف",
             isDestructive = true,
             onConfirm = {
-                viewModel.deleteFarm(farm.id) { deleted ->
-                    if (deleted) {
-                        onNavigateBack()
-                    } else {
-                        alertMessage = "این مزرعه دارای ثبت است و نمی‌توان آن را حذف کرد؛ به جای آن غیرفعال شد."
-                    }
+                viewModel.deleteFarm(farm.id) {
+                    showDeleteFarmDialog = false
+                    onNavigateBack()
                 }
             },
             onDismiss = { showDeleteFarmDialog = false }
@@ -327,7 +388,8 @@ fun FarmDetailScreen(
     // Create Plot Dialog
     if (showCreatePlotDialog) {
         PlotFormDialog(
-            farmDefaultWorkType = farmWorkTypeDefault(allFarmPlots),
+            initialPlot = null,
+            farmDefaultWorkType = getFarmDefaultWorkType(allFarmPlots),
             isZeraatActive = uiState.isZeraatActive,
             isNahalestanActive = uiState.isNahalestanActive,
             onDismiss = { showCreatePlotDialog = false },
@@ -370,10 +432,7 @@ fun FarmDetailScreen(
             confirmText = "حذف",
             isDestructive = true,
             onConfirm = {
-                viewModel.deletePlot(plotToDelete!!) { deleted ->
-                    if (!deleted) {
-                        alertMessage = "این قطعه دارای ثبت است و فقط غیرفعال شد."
-                    }
+                viewModel.deletePlot(plotToDelete!!) {
                     plotToDelete = null
                 }
             },
@@ -381,7 +440,7 @@ fun FarmDetailScreen(
         )
     }
 
-    // Info Alert
+    // Alert Message Dialog
     if (alertMessage != null) {
         AlertDialog(
             onDismissRequest = { alertMessage = null },
@@ -389,14 +448,14 @@ fun FarmDetailScreen(
             text = { Text(alertMessage!!) },
             confirmButton = {
                 Button(onClick = { alertMessage = null }) {
-                    Text("متوجه شدم")
+                    Text("باشه")
                 }
             }
         )
     }
 }
 
-private fun farmWorkTypeDefault(plots: List<PlotEntity>): String {
+private fun getFarmDefaultWorkType(plots: List<PlotEntity>): String {
     val defaultPlot = plots.firstOrNull { it.isDefault }
     return defaultPlot?.workType ?: "zeraat"
 }
@@ -404,6 +463,7 @@ private fun farmWorkTypeDefault(plots: List<PlotEntity>): String {
 @Composable
 fun PlotItemCard(
     plot: PlotEntity,
+    plotCost: Long = 0L,
     onEdit: () -> Unit,
     onToggleActive: () -> Unit,
     onDelete: () -> Unit
@@ -436,6 +496,67 @@ fun PlotItemCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.outline
                 )
+
+                // Cost Chip if expenses exist
+                if (plotCost > 0) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    SuggestionChip(
+                        onClick = {},
+                        label = { Text("هزینه‌ها: ${NumberFormatHelper.formatTomanShort(plotCost)}", style = MaterialTheme.typography.labelSmall) },
+                        icon = { Icon(Icons.Default.MonetizationOn, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary) }
+                    )
+                }
+
+                // Nursery badges if plot is nahalestan
+                if (plot.workType == "nahalestan") {
+                    val nurseryData = remember(plot.note) { NurseryHelper.parse(plot.note) }
+                    val hasNurseryData = nurseryData.saplingCount != null || nurseryData.scionVariety.isNotBlank() || nurseryData.graftYear.isNotBlank()
+                    if (hasNurseryData) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (nurseryData.saplingCount != null) {
+                                val saplingFa = NumberFormatHelper.toPersianDigits(nurseryData.saplingCount)
+                                SuggestionChip(
+                                    onClick = {},
+                                    label = { Text("$saplingFa اصله نهال", style = MaterialTheme.typography.labelSmall) },
+                                    icon = { Icon(Icons.Default.Park, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary) }
+                                )
+                            }
+                            if (nurseryData.scionVariety.isNotBlank()) {
+                                SuggestionChip(
+                                    onClick = {},
+                                    label = { Text("رقم: ${nurseryData.scionVariety}", style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                            if (nurseryData.graftYear.isNotBlank()) {
+                                val yearFa = NumberFormatHelper.toPersianDigits(nurseryData.graftYear)
+                                SuggestionChip(
+                                    onClick = {},
+                                    label = { Text("سال: $yearFa", style = MaterialTheme.typography.labelSmall) }
+                                )
+                            }
+                        }
+                    }
+
+                    if (nurseryData.generalNote.isNotBlank()) {
+                        Text(
+                            text = nurseryData.generalNote,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.padding(top = 2.dp)
+                        )
+                    }
+                } else if (plot.note.isNotBlank()) {
+                    Text(
+                        text = plot.note,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline,
+                        modifier = Modifier.padding(top = 2.dp)
+                    )
+                }
             }
 
             Row {
@@ -485,10 +606,27 @@ fun PlotFormDialog(
             if (initialPlot?.areaM2 != null && initialPlot.areaM2 >= 10000.0) "hectare" else "m2"
         )
     }
-    var note by remember { mutableStateOf(initialPlot?.note ?: "") }
+
+    // Parse initial nursery details
+    val initialNurseryData = remember(initialPlot?.note) {
+        NurseryHelper.parse(initialPlot?.note ?: "")
+    }
+    var saplingCountInput by remember {
+        mutableStateOf(initialNurseryData.saplingCount?.toString() ?: "")
+    }
+    var scionVarietyInput by remember {
+        mutableStateOf(initialNurseryData.scionVariety)
+    }
+    var graftYearInput by remember {
+        mutableStateOf(initialNurseryData.graftYear)
+    }
+    var generalNoteInput by remember {
+        mutableStateOf(initialNurseryData.generalNote)
+    }
 
     val bothTypesActive = isZeraatActive && isNahalestanActive
     val effectiveWorkType = if (bothTypesActive) workType else if (isZeraatActive) "zeraat" else "nahalestan"
+    val isNurseryMode = effectiveWorkType == "nahalestan"
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -554,10 +692,59 @@ fun PlotFormDialog(
                     }
                 }
 
+                // Dedicated Nursery Fields
+                if (isNurseryMode) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.35f)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.padding(12.dp)
+                        ) {
+                            Text(
+                                text = "اطلاعات اختصاصی نهالستان",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+
+                            OutlinedTextField(
+                                value = saplingCountInput,
+                                onValueChange = { saplingCountInput = it },
+                                label = { Text("تعداد اصله نهال") },
+                                placeholder = { Text("مثلاً ۱۲۰۰") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("plot_saplings_count_input")
+                            )
+
+                            OutlinedTextField(
+                                value = scionVarietyInput,
+                                onValueChange = { scionVarietyInput = it },
+                                label = { Text("نوع پایه / رقم پیوندک") },
+                                placeholder = { Text("مثلاً بادام شاهرود دیرگل") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("plot_scion_variety_input")
+                            )
+
+                            OutlinedTextField(
+                                value = graftYearInput,
+                                onValueChange = { graftYearInput = it },
+                                label = { Text("سال پیوند یا کاشت") },
+                                placeholder = { Text("مثلاً ۱۴۰۲") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("plot_graft_year_input")
+                            )
+                        }
+                    }
+                }
+
                 OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("توضیحات") },
+                    value = generalNoteInput,
+                    onValueChange = { generalNoteInput = it },
+                    label = { Text("توضیحات کلی") },
                     maxLines = 3,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -571,7 +758,19 @@ fun PlotFormDialog(
                         if (areaUnit == "hectare") parsedArea * 10000.0 else parsedArea
                     } else null
 
-                    onSave(name, effectiveWorkType, areaM2, note)
+                    val parsedSaplings = NumberFormatHelper.parsePersianLong(saplingCountInput)?.toInt()
+                    val finalNote = if (isNurseryMode) {
+                        NurseryHelper.format(
+                            saplingCount = parsedSaplings,
+                            scionVariety = scionVarietyInput,
+                            graftYear = graftYearInput,
+                            generalNote = generalNoteInput
+                        )
+                    } else {
+                        generalNoteInput
+                    }
+
+                    onSave(name, effectiveWorkType, areaM2, finalNote)
                 },
                 enabled = name.isNotBlank(),
                 modifier = Modifier.testTag("save_plot_btn")

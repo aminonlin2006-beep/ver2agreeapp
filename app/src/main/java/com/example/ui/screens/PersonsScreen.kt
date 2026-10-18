@@ -18,7 +18,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import com.example.ui.components.EmploymentDialog
+import com.example.ui.components.TeamManagementDialog
 import androidx.compose.ui.unit.dp
+import com.example.data.entity.CrewEntity
+import com.example.data.entity.CrewMemberEntity
 import com.example.data.entity.PersonEntity
 import com.example.data.entity.RoleEntity
 import com.example.lib.NumberFormatHelper
@@ -41,11 +45,42 @@ fun PersonsScreen(
     var showCreatePersonDialog by remember { mutableStateOf(false) }
     var personToEdit by remember { mutableStateOf<PersonEntity?>(null) }
     var personToDelete by remember { mutableStateOf<PersonEntity?>(null) }
+    var personToEmploy by remember { mutableStateOf<PersonEntity?>(null) }
+    var personToManageTeam by remember { mutableStateOf<PersonEntity?>(null) }
     var showRolesManagementDialog by remember { mutableStateOf(false) }
     var showInactiveSection by remember { mutableStateOf(false) }
     var alertMessage by remember { mutableStateOf<String?>(null) }
 
-    val rolesMap = remember(uiState.roles) { uiState.roles.associateBy { it.id } }
+    if (personToEmploy != null) {
+        val person = personToEmploy!!
+        val employment = uiState.employments.find { it.personId == person.id && !it.deleted }
+        val salaryRate = uiState.salaryRates.find { it.personId == person.id && !it.deleted }?.monthlySalary ?: 0L
+        EmploymentDialog(
+            personId = person.id,
+            initialEmployment = employment,
+            initialSalary = salaryRate,
+            onDismiss = { personToEmploy = null },
+            onSave = { e, salary ->
+                viewModel.saveEmployment(e, salary)
+                personToEmploy = null
+            }
+        )
+    }
+
+    if (personToManageTeam != null) {
+        val foremanPerson = personToManageTeam!!
+        TeamManagementDialog(
+            foreman = foremanPerson,
+            crews = uiState.crews,
+            crewMembers = uiState.crewMembers,
+            allWorkers = uiState.persons.filter { it.id != foremanPerson.id && it.active },
+            onDismiss = { personToManageTeam = null },
+            onSave = { workerIds ->
+                viewModel.saveTeamForForeman(foremanPerson, workerIds)
+                personToManageTeam = null
+            }
+        )
+    }
 
     val filteredPersons = remember(uiState.persons, searchQuery, selectedRoleFilter) {
         uiState.persons.filter { person ->
@@ -58,6 +93,7 @@ fun PersonsScreen(
 
     val activePersons = filteredPersons.filter { it.active }
     val inactivePersons = filteredPersons.filter { !it.active }
+    val rolesMap = remember(uiState.roles) { uiState.roles.associateBy { it.id } }
 
     Scaffold(
         topBar = {
@@ -180,7 +216,9 @@ fun PersonsScreen(
                     },
                     onEdit = { personToEdit = person },
                     onToggleActive = { viewModel.togglePersonActive(person) },
-                    onDelete = { personToDelete = person }
+                    onDelete = { personToDelete = person },
+                    onSetEmployment = { personToEmploy = person },
+                    onManageTeam = { personToManageTeam = person }
                 )
             }
 
@@ -232,7 +270,9 @@ fun PersonsScreen(
                                             },
                                             onEdit = { personToEdit = person },
                                             onToggleActive = { viewModel.togglePersonActive(person) },
-                                            onDelete = { personToDelete = person }
+                                            onDelete = { personToDelete = person },
+                                            onSetEmployment = { personToEmploy = person },
+                                            onManageTeam = { personToManageTeam = person }
                                         )
                                     }
                                 }
@@ -248,11 +288,21 @@ fun PersonsScreen(
     if (showCreatePersonDialog) {
         PersonFormDialog(
             availableRoles = uiState.roles.filter { !it.hidden },
+            allPersons = uiState.persons,
+            crews = uiState.crews,
+            crewMembers = uiState.crewMembers,
             onDismiss = { showCreatePersonDialog = false },
-            onSave = { name, phone, roleIds, note ->
-                viewModel.createPerson(name, phone, roleIds, note) {
-                    showCreatePersonDialog = false
-                }
+            onSave = { name, phone, roleIds, note, foremanId, workerIds ->
+                viewModel.savePersonWithRelations(
+                    personId = null,
+                    name = name,
+                    phone = phone,
+                    roleIds = roleIds,
+                    note = note,
+                    foremanId = foremanId,
+                    workerIds = workerIds,
+                    onSuccess = { showCreatePersonDialog = false }
+                )
             }
         )
     }
@@ -262,17 +312,21 @@ fun PersonsScreen(
         PersonFormDialog(
             initialPerson = personToEdit,
             availableRoles = uiState.roles, // Show even hidden roles if this person already has it
+            allPersons = uiState.persons,
+            crews = uiState.crews,
+            crewMembers = uiState.crewMembers,
             onDismiss = { personToEdit = null },
-            onSave = { name, phone, roleIds, note ->
-                val updated = personToEdit!!.copy(
+            onSave = { name, phone, roleIds, note, foremanId, workerIds ->
+                viewModel.savePersonWithRelations(
+                    personId = personToEdit!!.id,
                     name = name,
                     phone = phone,
-                    roleIds = org.json.JSONArray(roleIds).toString(),
-                    note = note
+                    roleIds = roleIds,
+                    note = note,
+                    foremanId = foremanId,
+                    workerIds = workerIds,
+                    onSuccess = { personToEdit = null }
                 )
-                viewModel.updatePerson(updated) {
-                    personToEdit = null
-                }
             }
         )
     }
@@ -338,8 +392,19 @@ fun PersonCard(
     onCallPhone: (String) -> Unit,
     onEdit: () -> Unit,
     onToggleActive: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onSetEmployment: () -> Unit,
+    onManageTeam: (() -> Unit)? = null
 ) {
+    val roleIds = try {
+        val arr = org.json.JSONArray(person.roleIds)
+        val list = mutableListOf<String>()
+        for (i in 0 until arr.length()) list.add(arr.getString(i))
+        list
+    } catch (_: Exception) {
+        emptyList()
+    }
+    
     Card(
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
@@ -361,6 +426,14 @@ fun PersonCard(
                 )
 
                 Row {
+                    if (roleIds.any { rolesMap[it]?.builtInKey == "foreman" || rolesMap[it]?.name == "سرکارگر" }) {
+                        IconButton(onClick = { onManageTeam?.invoke() }) {
+                            Icon(Icons.Default.GroupAdd, contentDescription = "مدیریت تیم", modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    IconButton(onClick = onSetEmployment) {
+                        Icon(Icons.Default.Work, contentDescription = "تنظیم کار", modifier = Modifier.size(20.dp))
+                    }
                     IconButton(onClick = onEdit) {
                         Icon(Icons.Default.Edit, contentDescription = "ویرایش", modifier = Modifier.size(20.dp))
                     }
@@ -378,14 +451,6 @@ fun PersonCard(
             }
 
             // Roles as chips
-            val roleIds = try {
-                val arr = org.json.JSONArray(person.roleIds)
-                val list = mutableListOf<String>()
-                for (i in 0 until arr.length()) list.add(arr.getString(i))
-                list
-            } catch (_: Exception) {
-                emptyList()
-            }
 
             if (roleIds.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(4.dp))
@@ -448,8 +513,11 @@ fun PersonCard(
 fun PersonFormDialog(
     initialPerson: PersonEntity? = null,
     availableRoles: List<RoleEntity>,
+    allPersons: List<PersonEntity>,
+    crews: List<CrewEntity>,
+    crewMembers: List<CrewMemberEntity>,
     onDismiss: () -> Unit,
-    onSave: (name: String, phone: String, roleIds: List<String>, note: String) -> Unit
+    onSave: (name: String, phone: String, roleIds: List<String>, note: String, foremanId: String?, workerIds: List<String>) -> Unit
 ) {
     var name by remember { mutableStateOf(initialPerson?.name ?: "") }
     var phone by remember { mutableStateOf(initialPerson?.phone ?: "") }
@@ -470,17 +538,62 @@ fun PersonFormDialog(
 
     var selectedRoleIds by remember { mutableStateOf(initialSelectedRoleIds.toSet()) }
 
+    // Logic for Foreman/Worker Selection
+    val foremanRole = availableRoles.find { it.builtInKey == "foreman" || it.name == "سرکارگر" }
+    val workerRole = availableRoles.find { it.builtInKey == "worker" || it.name == "کارگر" }
+    val isForeman = foremanRole != null && selectedRoleIds.contains(foremanRole.id)
+    val isWorker = workerRole != null && selectedRoleIds.contains(workerRole.id)
+
+    val initialForemanId = remember(initialPerson, crews, crewMembers) {
+        if (initialPerson != null) {
+            val myMember = crewMembers.find { it.personId == initialPerson.id && !it.deleted }
+            crews.find { it.id == myMember?.crewId && !it.deleted }?.foremanId
+        } else null
+    }
+    var selectedForemanId by remember { mutableStateOf<String?>(initialForemanId) }
+
+    val initialWorkerIds = remember(initialPerson, crews, crewMembers) {
+        if (initialPerson != null) {
+            val myCrew = crews.find { it.foremanId == initialPerson.id && !it.deleted }
+            if (myCrew != null) {
+                crewMembers.filter { it.crewId == myCrew.id && !it.deleted }.map { it.personId }.toSet()
+            } else emptySet()
+        } else emptySet()
+    }
+    var selectedWorkerIds by remember { mutableStateOf(initialWorkerIds) }
+    var isForemanExpanded by remember { mutableStateOf(false) }
+
+    val eligibleForemen = remember(allPersons, availableRoles, initialPerson) {
+        allPersons.filter { p ->
+            val pRoles = try {
+                val arr = org.json.JSONArray(p.roleIds)
+                val list = mutableListOf<String>()
+                for (i in 0 until arr.length()) list.add(arr.getString(i))
+                list
+            } catch (_: Exception) { emptyList<String>() }
+            pRoles.any { rid ->
+                availableRoles.find { it.id == rid }?.let { it.builtInKey == "foreman" || it.name == "سرکارگر" } == true
+            } && p.active && p.id != initialPerson?.id
+        }
+    }
+
+    val candidateWorkers = remember(allPersons, initialPerson) {
+        allPersons.filter { it.id != initialPerson?.id && it.active }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Text(
                 text = if (initialPerson == null) "افزودن شخص تازه" else "ویرایش شخص",
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(bottom = 8.dp)
             )
         },
         text = {
             LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                contentPadding = PaddingValues(top = 8.dp, bottom = 8.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 item {
@@ -498,42 +611,135 @@ fun PersonFormDialog(
                         value = phone,
                         onValueChange = { phone = it },
                         label = { Text("شماره تماس") },
-                        placeholder = { Text("مثلاً ۰۹۱۲۳۴۵۶۷۸۹") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth().testTag("person_phone_input")
                     )
                 }
 
                 item {
-                    Text("نقش‌ها:", style = MaterialTheme.typography.labelMedium)
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        availableRoles.forEach { role ->
-                            val isChecked = selectedRoleIds.contains(role.id)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        selectedRoleIds = if (isChecked) {
-                                            selectedRoleIds - role.id
-                                        } else {
-                                            selectedRoleIds + role.id
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text("نقش‌ها:", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            availableRoles.forEach { role ->
+                                val isChecked = selectedRoleIds.contains(role.id)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            selectedRoleIds = if (isChecked) selectedRoleIds - role.id else selectedRoleIds + role.id
+                                        }
+                                        .padding(vertical = 4.dp)
+                                ) {
+                                    Checkbox(checked = isChecked, onCheckedChange = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(role.name, style = MaterialTheme.typography.bodyMedium)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    androidx.compose.animation.AnimatedVisibility(visible = isWorker) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f)),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("انتخاب سرکارگر", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                                if (eligibleForemen.isEmpty()) {
+                                    Text(
+                                        text = "سرکارگری در سامانه ثبت نشده است.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                } else {
+                                    ExposedDropdownMenuBox(
+                                        expanded = isForemanExpanded,
+                                        onExpandedChange = { isForemanExpanded = !isForemanExpanded },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        val foreman = allPersons.find { it.id == selectedForemanId }
+                                        OutlinedTextField(
+                                            value = foreman?.name ?: "انتخاب سرکارگر (اختیاری)",
+                                            onValueChange = {},
+                                            readOnly = true,
+                                            label = { Text("سرکارگر") },
+                                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isForemanExpanded) },
+                                            modifier = Modifier.fillMaxWidth().menuAnchor()
+                                        )
+                                        ExposedDropdownMenu(
+                                            expanded = isForemanExpanded,
+                                            onDismissRequest = { isForemanExpanded = false }
+                                        ) {
+                                            DropdownMenuItem(
+                                                text = { Text("بدون سرکارگر") },
+                                                onClick = {
+                                                    selectedForemanId = null
+                                                    isForemanExpanded = false
+                                                }
+                                            )
+                                            eligibleForemen.forEach { f ->
+                                                DropdownMenuItem(
+                                                    text = { Text(f.name) },
+                                                    onClick = {
+                                                        selectedForemanId = f.id
+                                                        isForemanExpanded = false
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
-                                    .padding(vertical = 4.dp)
-                            ) {
-                                Checkbox(
-                                    checked = isChecked,
-                                    onCheckedChange = { checked ->
-                                        selectedRoleIds = if (checked) {
-                                            selectedRoleIds + role.id
-                                        } else {
-                                            selectedRoleIds - role.id
+                                }
+                            }
+                        }
+                    }
+                }
+
+                item {
+                    androidx.compose.animation.AnimatedVisibility(visible = isForeman) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.2f)),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("کارگران زیرمجموعه", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, modifier = Modifier.padding(bottom = 8.dp))
+                                if (candidateWorkers.isEmpty()) {
+                                    Text(
+                                        text = "کارگر دیگری در سامانه ثبت نشده است.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                } else {
+                                    candidateWorkers.forEach { worker ->
+                                        val isChecked = selectedWorkerIds.contains(worker.id)
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    selectedWorkerIds = if (isChecked) selectedWorkerIds - worker.id else selectedWorkerIds + worker.id
+                                                }
+                                                .padding(vertical = 4.dp)
+                                        ) {
+                                            Checkbox(
+                                                checked = isChecked,
+                                                onCheckedChange = { checked ->
+                                                    selectedWorkerIds = if (checked) selectedWorkerIds + worker.id else selectedWorkerIds - worker.id
+                                                }
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(worker.name, style = MaterialTheme.typography.bodyMedium)
                                         }
                                     }
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(role.name, style = MaterialTheme.typography.bodyMedium)
+                                }
                             }
                         }
                     }
@@ -543,7 +749,7 @@ fun PersonFormDialog(
                     OutlinedTextField(
                         value = note,
                         onValueChange = { note = it },
-                        label = { Text("توضیحات (مثلاً صاحب زمین، آدرس...)") },
+                        label = { Text("توضیحات...") },
                         maxLines = 3,
                         modifier = Modifier.fillMaxWidth()
                     )
@@ -553,16 +759,16 @@ fun PersonFormDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(name, phone, selectedRoleIds.toList(), note)
+                    onSave(name, phone, selectedRoleIds.toList(), note, selectedForemanId, selectedWorkerIds.toList())
                 },
                 enabled = name.isNotBlank(),
-                modifier = Modifier.testTag("save_person_btn")
+                modifier = Modifier.fillMaxWidth().testTag("save_person_btn")
             ) {
                 Text("ذخیره")
             }
         },
         dismissButton = {
-            OutlinedButton(onClick = onDismiss) {
+            TextButton(onClick = onDismiss) {
                 Text("انصراف")
             }
         }

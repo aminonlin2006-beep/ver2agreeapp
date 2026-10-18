@@ -119,6 +119,7 @@ data class TaskEntity(
     val assigneePersonIds: String = "[]", // JSON array of person IDs
     val assigneeCrewId: String? = null, // Optional crew assignee (either personIds or crewId; Decision 173)
     val tagId: String? = null,
+    val cropId: String? = null,
     val note: String = "",
     val status: String = "open", // "open" | "done" | "cancelled"
     val closedAt: String? = null,
@@ -180,6 +181,7 @@ data class AttendanceEntity(
     val plotId: String? = null,
     val crewId: String,
     val tagId: String, // mandatory
+    val cropId: String? = null,
     val lines: String = "[]", // JSON array: [{"personId": "...", "ticks": 1}]
     val headcount: Int? = null, // for kind = count
     val countTicks: Int? = null, // for kind = count
@@ -216,6 +218,7 @@ data class PieceWorkEntity(
     val farmId: String? = null,
     val plotId: String? = null,
     val tagId: String,
+    val cropId: String? = null,
     val jobType: String,
     val size: String,
     val rate: Long,
@@ -308,6 +311,7 @@ data class ExpenseEntity(
     val plotId: String? = null,
     val workerIds: String = "[]", // JSON array of personIds, or "\"all\""
     val tagId: String? = null,
+    val cropId: String? = null,
     val counterpartyId: String? = null, // personId
     val payMode: String = "cash", // "cash" | "credit" | "partial"
     val paidAmount: Long? = null, // for partial
@@ -374,6 +378,35 @@ data class SalaryPostingEntity(
     val computedAmount: Long,
     val expenseId: String,
     val postedAt: String = Instant.now().toString(),
+    val createdAt: String = Instant.now().toString(),
+    val updatedAt: String = Instant.now().toString(),
+    val createdBy: String = "owner",
+    val deleted: Boolean = false,
+    val deletedAt: String? = null
+)
+
+@Entity(tableName = "products")
+data class ProductEntity(
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val createdAt: String = Instant.now().toString(),
+    val updatedAt: String = Instant.now().toString(),
+    val createdBy: String = "owner",
+    val deleted: Boolean = false,
+    val deletedAt: String? = null
+)
+
+@Entity(tableName = "crops")
+data class CropEntity(
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val name: String,
+    val plotId: String,
+    val startDate: String, // ISO date "YYYY-MM-DD"
+    val endDate: String? = null,   // ISO date "YYYY-MM-DD"
+    val productIds: String = "[]", // JSON array
+    val quantity: Double? = null,
+    val size: String? = null,
+    val note: String = "",
     val createdAt: String = Instant.now().toString(),
     val updatedAt: String = Instant.now().toString(),
     val createdBy: String = "owner",

@@ -2230,3 +2230,46 @@ fun WaitingListDialog(
         }
     )
 }
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AbsenceDialog(
+    initialAbsence: com.example.data.entity.AbsenceEntity? = null,
+    personId: String,
+    onDismiss: () -> Unit,
+    onSave: (com.example.data.entity.AbsenceEntity) -> Unit
+) {
+    var fromDate by remember { mutableStateOf(initialAbsence?.fromDate ?: "") }
+    var toDate by remember { mutableStateOf(initialAbsence?.toDate ?: "") }
+    var type by remember { mutableStateOf(initialAbsence?.type ?: "unknown") }
+    var note by remember { mutableStateOf(initialAbsence?.note ?: "") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("ثبت غیبت") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(value = fromDate, onValueChange = { fromDate = it }, label = { Text("از تاریخ (YYYY-MM-DD)") })
+                OutlinedTextField(value = toDate, onValueChange = { toDate = it }, label = { Text("تا تاریخ (YYYY-MM-DD)") })
+                // Type selection (simplified)
+                Text("نوع غیبت: $type")
+                OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("توضیح") })
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(
+                    com.example.data.entity.AbsenceEntity(
+                        id = initialAbsence?.id ?: java.util.UUID.randomUUID().toString(),
+                        personId = personId,
+                        fromDate = fromDate,
+                        toDate = toDate,
+                        type = type,
+                        note = note
+                    )
+                )
+            }) { Text("ذخیره") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } }
+    )
+}

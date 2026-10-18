@@ -5,9 +5,14 @@ import com.example.data.AppDatabase
 import com.example.data.entity.AttendanceEntity
 import com.example.data.entity.CrewEntity
 import com.example.data.entity.CrewMemberEntity
+import com.example.data.entity.CropEntity
+import com.example.data.entity.EmploymentEntity
+import com.example.data.entity.ExpenseEntity
+import com.example.data.entity.ExpenseTypeEntity
 import com.example.data.entity.FarmEntity
 import com.example.data.entity.HistoryEntity
 import com.example.data.entity.LedgerEntryEntity
+import com.example.data.entity.ProductEntity
 import com.example.data.entity.MyCountEntity
 import com.example.data.entity.PaymentEntity
 import com.example.data.entity.PersonEntity
@@ -18,8 +23,11 @@ import com.example.data.entity.SettingEntity
 import com.example.data.entity.SnapshotEntity
 import com.example.data.entity.TagEntity
 import com.example.data.entity.TaskEntity
+import com.example.data.entity.SalaryPostingEntity
+import com.example.data.entity.SalaryRateEntity
 import com.example.data.entity.WageRateEntity
 import com.example.data.entity.WaitingListEntity
+import com.example.data.entity.AbsenceEntity
 import com.example.lib.JalaliDateHelper
 import com.example.lib.NumberFormatHelper
 import com.example.lib.WorkforceCalculator
@@ -225,6 +233,7 @@ class DataGateway(context: Context) {
         if (existingRoles.isEmpty()) {
             dao.insertRole(RoleEntity(name = "کارگر", builtInKey = "worker"))
             dao.insertRole(RoleEntity(name = "سرکارگر", builtInKey = "foreman"))
+            dao.insertRole(RoleEntity(name = "کارفرما", builtInKey = "employer"))
             dao.insertRole(RoleEntity(name = "خریدار", builtInKey = "buyer"))
             dao.insertRole(RoleEntity(name = "فروشنده", builtInKey = "seller"))
         }
@@ -236,6 +245,20 @@ class DataGateway(context: Context) {
             dao.insertTag(TagEntity(name = "داشت", parentId = null, color = "#1976D2", builtInKey = "dasht", sortOrder = 2))
             dao.insertTag(TagEntity(name = "برداشت", parentId = null, color = "#F57C00", builtInKey = "bardasht", sortOrder = 3))
             dao.insertTag(TagEntity(name = "سایر", parentId = null, color = "#757575", builtInKey = "sayer", sortOrder = 4))
+        }
+
+        // Built-in Expense Types
+        val existingExpenseTypes = dao.getAllExpenseTypesList()
+        if (existingExpenseTypes.isEmpty()) {
+            val types = listOf(
+                "حقوق کارگر" to "salary", "سم" to null, "کود" to null, "بذر و نهال" to null,
+                "گلدان و خاک" to null, "سوخت" to null, "آب و برق" to null, "اجاره‌ی زمین" to null,
+                "رفت‌وآمد" to null, "ابزار و تعمیر" to null, "یخ و خوراکی" to null,
+                "دستکش و لوازم" to null, "هزینه‌ی فروش" to null, "سایر" to null
+            )
+            for (type in types) {
+                dao.insertExpenseType(ExpenseTypeEntity(name = type.first, builtInKey = type.second))
+            }
         }
     }
 
@@ -427,6 +450,8 @@ class DataGateway(context: Context) {
 
     // --- PERSONS & ROLES ---
     fun getAllPersonsFlow(): Flow<List<PersonEntity>> = dao.getAllPersons().flowOn(Dispatchers.IO)
+    suspend fun getAllPersonsList(): List<PersonEntity> = withContext(Dispatchers.IO) { dao.getAllPersonsList() }
+    suspend fun getPersonById(id: String): PersonEntity? = withContext(Dispatchers.IO) { dao.getPersonById(id) }
     fun getAllRolesFlow(): Flow<List<RoleEntity>> = dao.getAllRoles().flowOn(Dispatchers.IO)
 
     suspend fun getAllRolesList(): List<RoleEntity> = withContext(Dispatchers.IO) {
@@ -2104,4 +2129,159 @@ class DataGateway(context: Context) {
         dao.setSetting(SettingEntity("foremanCoefficients", """{"present":2,"absent":1}"""))
         dao.setSetting(SettingEntity("tomorrowTasksHour", "18:00"))
     }
+
+    // --- EXPENSES ---
+    fun getAllExpenseTypesFlow(): Flow<List<ExpenseTypeEntity>> = dao.getAllExpenseTypes().flowOn(Dispatchers.IO)
+    suspend fun getAllExpenseTypesList(): List<ExpenseTypeEntity> = withContext(Dispatchers.IO) { dao.getAllExpenseTypesList() }
+
+    suspend fun createExpenseType(name: String): ExpenseTypeEntity = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val et = ExpenseTypeEntity(name = name.trim(), createdAt = now, updatedAt = now)
+        dao.insertExpenseType(et)
+        incrementUnsentChanges()
+        et
+    }
+
+    suspend fun updateExpenseType(et: ExpenseTypeEntity) = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        dao.updateExpenseType(et.copy(updatedAt = now))
+        incrementUnsentChanges()
+    }
+
+    suspend fun deleteExpenseType(et: ExpenseTypeEntity): Boolean = withContext(Dispatchers.IO) {
+        if (et.builtInKey != null) return@withContext false
+        val expenses = dao.getAllExpensesList().filter { it.typeId == et.id && !it.deleted }
+        if (expenses.isNotEmpty()) return@withContext false
+        val now = Instant.now().toString()
+        dao.updateExpenseType(et.copy(deleted = true, deletedAt = now, updatedAt = now))
+        incrementUnsentChanges()
+        true
+    }
+
+    fun getAllExpensesFlow(): Flow<List<ExpenseEntity>> = dao.getAllExpenses().flowOn(Dispatchers.IO)
+    suspend fun insertExpense(e: ExpenseEntity) = withContext(Dispatchers.IO) { dao.insertExpense(e) }
+
+    suspend fun createExpense(
+        date: String,
+        amount: Long,
+        typeId: String,
+        farmId: String?,
+        plotId: String?,
+        workerIds: List<String>,
+        tagId: String?,
+        cropId: String?,
+        counterpartyId: String?,
+        payMode: String,
+        paidAmount: Long?,
+        note: String,
+        systemKind: String?
+    ): ExpenseEntity = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val e = ExpenseEntity(
+            date = date,
+            amount = amount,
+            typeId = typeId,
+            farmId = farmId,
+            plotId = plotId,
+            workerIds = JSONArray(workerIds).toString(),
+            tagId = tagId,
+            cropId = cropId,
+            counterpartyId = counterpartyId,
+            payMode = payMode,
+            paidAmount = paidAmount,
+            note = note.trim(),
+            systemKind = systemKind,
+            createdAt = now,
+            updatedAt = now
+        )
+        dao.insertExpense(e)
+
+        // Ledger entry for credit/partial
+        if (counterpartyId != null && (payMode == "credit" || payMode == "partial")) {
+            val debtAmount = if (payMode == "credit") amount else (amount - (paidAmount ?: 0))
+            if (debtAmount != 0L) {
+                val entry = LedgerEntryEntity(
+                    accountType = "person",
+                    accountId = counterpartyId,
+                    date = date,
+                    kind = "debit",
+                    amount = debtAmount,
+                    note = "ثبت بدهی هزینه: ${note.trim()}",
+                    createdAt = now,
+                    updatedAt = now
+                )
+                dao.insertLedgerEntry(entry)
+            }
+        }
+
+        incrementUnsentChanges()
+        e
+    }
+
+    suspend fun updateExpense(
+        e: ExpenseEntity,
+        changeDescription: String = "ویرایش هزینه"
+    ) = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val old = dao.getExpenseById(e.id)
+        if (old != null) {
+            val hist = HistoryEntity(
+                entityType = "expense",
+                entityId = e.id,
+                at = now,
+                changes = JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("field", "all")
+                        put("description", changeDescription)
+                    })
+                }.toString()
+            )
+            dao.insertHistory(hist)
+        }
+        dao.updateExpense(e.copy(updatedAt = now))
+        incrementUnsentChanges()
+    }
+
+    suspend fun deleteExpense(expenseId: String) = withContext(Dispatchers.IO) {
+        val exp = dao.getExpenseById(expenseId) ?: return@withContext
+        val now = Instant.now().toString()
+        
+        // Void related ledger entries if any
+        if (exp.counterpartyId != null) {
+            val entries = dao.getAllLedgerEntriesList().filter { 
+                it.accountId == exp.counterpartyId && it.note.contains("ثبت بدهی هزینه") && !it.voided && !it.deleted
+            }
+            for (entry in entries) {
+                dao.updateLedgerEntry(entry.copy(voided = true, voidReason = "حذف هزینه"))
+            }
+        }
+
+        dao.updateExpense(exp.copy(deleted = true, deletedAt = now, updatedAt = now))
+        incrementUnsentChanges()
+    }
+
+    // --- WORKFORCE (FIXED & SALKAR) ---
+    fun getAllEmploymentsFlow(): Flow<List<EmploymentEntity>> = dao.getAllEmployments().flowOn(Dispatchers.IO)
+    suspend fun getAllEmploymentsList(): List<EmploymentEntity> = withContext(Dispatchers.IO) { dao.getAllEmploymentsList() }
+    suspend fun insertEmployment(e: EmploymentEntity) = withContext(Dispatchers.IO) { dao.insertEmployment(e) }
+    suspend fun updateEmployment(e: EmploymentEntity) = withContext(Dispatchers.IO) { dao.updateEmployment(e) }
+
+    fun getAllSalaryRatesFlow(): Flow<List<SalaryRateEntity>> = dao.getAllSalaryRates().flowOn(Dispatchers.IO)
+    suspend fun insertSalaryRate(sr: SalaryRateEntity) = withContext(Dispatchers.IO) { dao.insertSalaryRate(sr) }
+
+    fun getAllAbsencesFlow(): Flow<List<AbsenceEntity>> = dao.getAllAbsences().flowOn(Dispatchers.IO)
+    suspend fun insertAbsence(a: AbsenceEntity) = withContext(Dispatchers.IO) { dao.insertAbsence(a) }
+    suspend fun updateAbsence(a: AbsenceEntity) = withContext(Dispatchers.IO) { dao.updateAbsence(a) }
+
+    fun getAllSalaryPostingsFlow(): Flow<List<SalaryPostingEntity>> = dao.getAllSalaryPostings().flowOn(Dispatchers.IO)
+
+    // --- CROPS & PRODUCTS ---
+    fun getAllCropsFlow(): Flow<List<CropEntity>> = dao.getAllCrops().flowOn(Dispatchers.IO)
+    suspend fun insertCrop(crop: CropEntity) = withContext(Dispatchers.IO) { dao.insertCrop(crop) }
+    suspend fun updateCrop(crop: CropEntity) = withContext(Dispatchers.IO) { dao.updateCrop(crop) }
+
+    fun getAllProductsFlow(): Flow<List<ProductEntity>> = dao.getAllProducts().flowOn(Dispatchers.IO)
+    suspend fun insertProduct(p: ProductEntity) = withContext(Dispatchers.IO) { dao.insertProduct(p) }
+    suspend fun updateProduct(p: ProductEntity) = withContext(Dispatchers.IO) { dao.updateProduct(p) }
 }
+

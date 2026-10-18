@@ -27,9 +27,17 @@ import com.example.data.entity.LedgerEntryEntity
 import com.example.data.entity.MyCountEntity
 import com.example.data.entity.PaymentEntity
 import com.example.data.entity.PieceWorkEntity
+import com.example.data.entity.EmploymentEntity
+import com.example.data.entity.ExpenseEntity
+import com.example.data.entity.ExpenseTypeEntity
+import com.example.data.entity.CropEntity
+import com.example.data.entity.ProductEntity
 import com.example.data.entity.TaskEntity
+import com.example.data.entity.SalaryPostingEntity
+import com.example.data.entity.SalaryRateEntity
 import com.example.data.entity.WageRateEntity
 import com.example.data.entity.WaitingListEntity
+import com.example.data.entity.AbsenceEntity
 
 data class MainUiState(
     val farms: List<FarmEntity> = emptyList(),
@@ -47,6 +55,14 @@ data class MainUiState(
     val ledgerEntries: List<LedgerEntryEntity> = emptyList(),
     val payments: List<PaymentEntity> = emptyList(),
     val waitingList: List<WaitingListEntity> = emptyList(),
+    val expenses: List<ExpenseEntity> = emptyList(),
+    val expenseTypes: List<ExpenseTypeEntity> = emptyList(),
+    val employments: List<EmploymentEntity> = emptyList(),
+    val salaryRates: List<SalaryRateEntity> = emptyList(),
+    val absences: List<AbsenceEntity> = emptyList(),
+    val salaryPostings: List<SalaryPostingEntity> = emptyList(),
+    val crops: List<CropEntity> = emptyList(),
+    val products: List<ProductEntity> = emptyList(),
     val snapshots: List<SnapshotEntity> = emptyList(),
     val unsentChanges: Int = 0,
     val isZeraatActive: Boolean = true,
@@ -66,7 +82,29 @@ data class MainUiState(
     val isInitialized: Boolean = false
 )
 
+data class Workforce2Data(
+    val employments: List<EmploymentEntity>,
+    val salaryRates: List<SalaryRateEntity>,
+    val absences: List<AbsenceEntity>,
+    val postings: List<SalaryPostingEntity>
+)
+
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
+
+    private data class Combined4(val c: CoreData, val t: List<TaskEntity>, val w: WorkforceData, val w2: Workforce2Data)
+    private data class Combined5(val c: CoreData, val t: List<TaskEntity>, val w: WorkforceData, val w2: Workforce2Data, val l: LedgerData)
+    private data class Combined6(val c: CoreData, val t: List<TaskEntity>, val w: WorkforceData, val w2: Workforce2Data, val l: LedgerData, val e: ExpenseData)
+
+    private data class CombinedData(
+        val core: CoreData,
+        val tasks: List<TaskEntity>,
+        val workforce: WorkforceData,
+        val workforce2: Workforce2Data,
+        val ledger: LedgerData,
+        val expense: ExpenseData,
+        val crop: CropData
+    )
 
     val gateway = DataGateway(application)
 
@@ -103,6 +141,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val waitingList: List<WaitingListEntity>
     )
 
+    private data class ExpenseData(
+        val expenses: List<ExpenseEntity>,
+        val expenseTypes: List<ExpenseTypeEntity>
+    )
+
+    private data class CropData(
+        val crops: List<CropEntity>,
+        val products: List<ProductEntity>
+    )
+
     private fun observeDatabase() {
         viewModelScope.launch {
             val coreDataFlow = combine(
@@ -134,13 +182,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 LedgerData(pieceWorks, entries, payments, waitingList)
             }
 
+            val expenseFlow = combine(
+                gateway.getAllExpensesFlow(),
+                gateway.getAllExpenseTypesFlow()
+            ) { expenses, expenseTypes ->
+                ExpenseData(expenses, expenseTypes)
+            }
+
+            val workforceFlow2 = combine(
+                gateway.getAllEmploymentsFlow(),
+                gateway.getAllSalaryRatesFlow(),
+                gateway.getAllAbsencesFlow(),
+                gateway.getAllSalaryPostingsFlow()
+            ) { employments, salaryRates, absences, postings ->
+                Workforce2Data(employments, salaryRates, absences, postings)
+            }
+
+
+
+            val cropFlow = combine(
+                gateway.getAllCropsFlow(),
+                gateway.getAllProductsFlow()
+            ) { crops, products ->
+                CropData(crops, products)
+            }
+
+            val combinedFlow1 = coreDataFlow
+                .combine(gateway.getAllTasksFlow()) { core, tasks -> Pair(core, tasks) }
+                .combine(workforceFlow) { (core, tasks), workforce -> Triple(core, tasks, workforce) }
+                .combine(workforceFlow2) { (core, tasks, workforce), workforce2 -> Combined4(core, tasks, workforce, workforce2) }
+                .combine(ledgerFlow) { (core, tasks, workforce, workforce2), ledger -> Combined5(core, tasks, workforce, workforce2, ledger) }
+                .combine(expenseFlow) { (core, tasks, workforce, workforce2, ledger), expense -> Combined6(core, tasks, workforce, workforce2, ledger, expense) }
+                .combine(cropFlow) { (core, tasks, workforce, workforce2, ledger, expense), crop ->
+                    CombinedData(core, tasks, workforce, workforce2, ledger, expense, crop)
+                }
+
+
             combine(
-                coreDataFlow,
-                gateway.getAllTasksFlow(),
-                workforceFlow,
-                ledgerFlow,
-                combine(gateway.getAllSettingsFlow(), gateway.getRecentSnapshotsFlow()) { s, sn -> Pair(s, sn) }
-            ) { core, tasks, workforce, ledger, (settingsList, snapshots) ->
+                combinedFlow1,
+                gateway.getAllSettingsFlow().combine(gateway.getRecentSnapshotsFlow()) { s, sn -> Pair(s, sn) }
+            ) { combined, pair ->
+                val settingsList = pair.first
+                val snapshots = pair.second
+                val core = combined.core
+                val tasks = combined.tasks
+                val workforce = combined.workforce
+                val workforce2 = combined.workforce2
+                val ledger = combined.ledger
+                val expense = combined.expense
+                val crop = combined.crop
                 val settingsMap = settingsList.associate { it.key to it.value }
 
                 val unsent = settingsMap["unsentChanges"]?.toIntOrNull() ?: 0
@@ -196,6 +286,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ledgerEntries = ledger.ledgerEntries,
                     payments = ledger.payments,
                     waitingList = ledger.waitingList,
+                    expenses = expense.expenses,
+                    expenseTypes = expense.expenseTypes,
+                    employments = workforce2.employments,
+                    salaryRates = workforce2.salaryRates,
+                    absences = workforce2.absences,
+                    salaryPostings = workforce2.postings,
+                    crops = crop.crops,
+                    products = crop.products,
                     snapshots = snapshots,
                     unsentChanges = unsent,
                     isZeraatActive = zeraat,
@@ -906,6 +1004,191 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             gateway.clearAllData()
             onComplete()
+        }
+    }
+
+    suspend fun getTeamMembers(crewId: String): List<String> {
+        return gateway.getAllCrewMembersList()
+            .filter { it.crewId == crewId && !it.deleted }
+            .map { it.personId }
+    }
+
+    fun saveTeam(crewId: String, workerIds: List<String>) {
+        viewModelScope.launch {
+            // Add or deactivate crew members based on selection
+            val existing = gateway.getAllCrewMembersList().filter { it.crewId == crewId && !it.deleted }
+            for (id in workerIds) {
+                if (existing.none { it.personId == id }) {
+                    gateway.addCrewMember(crewId, id)
+                }
+            }
+            for (member in existing) {
+                if (workerIds.none { it == member.personId }) {
+                    gateway.deactivateCrewMember(member.id)
+                }
+            }
+        }
+    }
+
+    // --- EXPENSES ---
+    fun createExpense(expense: ExpenseEntity) {
+        viewModelScope.launch {
+            gateway.insertExpense(expense)
+        }
+    }
+
+
+    fun updateExpense(expense: ExpenseEntity) {
+        viewModelScope.launch {
+            gateway.updateExpense(expense)
+        }
+    }
+
+    fun deleteExpense(expenseId: String) {
+        viewModelScope.launch {
+            gateway.deleteExpense(expenseId)
+        }
+    }
+
+    fun saveEmployment(employment: EmploymentEntity, salary: Long) {
+        viewModelScope.launch {
+            val existing = gateway.getAllEmploymentsList().find { it.personId == employment.personId && !it.deleted }
+            if (existing != null) {
+                gateway.updateEmployment(employment.copy(id = existing.id))
+            } else {
+                gateway.insertEmployment(employment)
+            }
+            gateway.insertSalaryRate(SalaryRateEntity(personId = employment.personId, monthlySalary = salary, effectiveFrom = employment.salaryFromMonth + "-01"))
+        }
+    }
+
+    fun savePersonWithRelations(
+        personId: String?,
+        name: String,
+        phone: String,
+        roleIds: List<String>,
+        note: String,
+        foremanId: String?,
+        workerIds: List<String>,
+        onSuccess: () -> Unit
+    ) {
+        viewModelScope.launch {
+            val person = if (personId == null) {
+                gateway.createPerson(name, phone, roleIds, note)
+            } else {
+                val existing = gateway.getAllPersonsList().find { it.id == personId }
+                val updated = existing?.copy(
+                    name = name.trim(),
+                    phone = phone.trim(),
+                    roleIds = org.json.JSONArray(roleIds).toString(),
+                    note = note.trim(),
+                    updatedAt = java.time.Instant.now().toString()
+                ) ?: PersonEntity(
+                    id = personId,
+                    name = name.trim(),
+                    phone = phone.trim(),
+                    roleIds = org.json.JSONArray(roleIds).toString(),
+                    note = note.trim()
+                )
+                gateway.updatePerson(updated)
+                updated
+            }
+
+            val roles = gateway.getAllRolesList()
+            val foremanRole = roles.find { it.builtInKey == "foreman" || it.name == "سرکارگر" }
+            val workerRole = roles.find { it.builtInKey == "worker" || it.name == "کارگر" }
+            val isForeman = foremanRole != null && roleIds.contains(foremanRole.id)
+            val isWorker = workerRole != null && roleIds.contains(workerRole.id)
+
+            val todayIso = JalaliDateHelper.toIsoDate(java.time.LocalDate.now())
+
+            // 1. If foreman: ensure or create their crew, then sync workerIds
+            if (isForeman) {
+                val allCrews = gateway.getAllCrewsList()
+                val crew = allCrews.find { it.foremanId == person.id && !it.deleted }
+                    ?: gateway.createCrew("دسته‌ی ${person.name}", "members", person.id, 800_000L, todayIso, "")
+
+                val currentMembers = gateway.getAllCrewMembersList().filter { it.crewId == crew.id && !it.deleted }
+                for (wId in workerIds) {
+                    if (currentMembers.none { it.personId == wId }) {
+                        gateway.addCrewMember(crew.id, wId)
+                        gateway.ensureWorkerRole(wId)
+                    }
+                }
+                for (m in currentMembers) {
+                    if (!workerIds.contains(m.personId)) {
+                        gateway.deactivateCrewMember(m.id)
+                    }
+                }
+            }
+
+            // 2. If worker and foremanId chosen: assign this worker to foreman's crew
+            if (isWorker && !foremanId.isNullOrBlank()) {
+                val allCrews = gateway.getAllCrewsList()
+                val fCrew = allCrews.find { it.foremanId == foremanId && !it.deleted }
+                    ?: run {
+                        val foremanPerson = gateway.getAllPersonsList().find { it.id == foremanId }
+                        gateway.createCrew("دسته‌ی ${foremanPerson?.name ?: ""}", "members", foremanId, 800_000L, todayIso, "")
+                    }
+                val currentMembers = gateway.getAllCrewMembersList().filter { it.crewId == fCrew.id && !it.deleted }
+                if (currentMembers.none { it.personId == person.id }) {
+                    gateway.addCrewMember(fCrew.id, person.id)
+                    gateway.ensureWorkerRole(person.id)
+                }
+            }
+
+            onSuccess()
+        }
+    }
+
+    fun saveTeamForForeman(foreman: PersonEntity, workerIds: List<String>, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            val todayIso = JalaliDateHelper.toIsoDate(java.time.LocalDate.now())
+            val allCrews = gateway.getAllCrewsList()
+            val crew = allCrews.find { it.foremanId == foreman.id && !it.deleted }
+                ?: gateway.createCrew("دسته‌ی ${foreman.name}", "members", foreman.id, 800_000L, todayIso, "")
+
+            val currentMembers = gateway.getAllCrewMembersList().filter { it.crewId == crew.id && !it.deleted }
+            for (wId in workerIds) {
+                if (currentMembers.none { it.personId == wId }) {
+                    gateway.addCrewMember(crew.id, wId)
+                    gateway.ensureWorkerRole(wId)
+                }
+            }
+            for (m in currentMembers) {
+                if (!workerIds.contains(m.personId)) {
+                    gateway.deactivateCrewMember(m.id)
+                }
+            }
+            onSuccess()
+        }
+    }
+
+    // --- CROPS ---
+    fun createCrop(name: String, plotId: String, startDate: String, note: String = "", onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            val crop = CropEntity(
+                name = name.trim(),
+                plotId = plotId,
+                startDate = startDate,
+                note = note.trim()
+            )
+            gateway.insertCrop(crop)
+            onSuccess()
+        }
+    }
+
+    fun updateCrop(crop: CropEntity, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            gateway.updateCrop(crop)
+            onSuccess()
+        }
+    }
+
+    fun deleteCrop(crop: CropEntity, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            gateway.updateCrop(crop.copy(deleted = true, deletedAt = java.time.Instant.now().toString()))
+            onSuccess()
         }
     }
 }

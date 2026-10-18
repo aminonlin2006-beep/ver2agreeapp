@@ -22,6 +22,8 @@ import com.example.data.entity.PieceWorkEntity
 import com.example.data.entity.PlotEntity
 import com.example.data.entity.RoleEntity
 import com.example.data.entity.SalaryPostingEntity
+import com.example.data.entity.ProductEntity
+import com.example.data.entity.CropEntity
 import com.example.data.entity.SalaryRateEntity
 import com.example.data.entity.SettingEntity
 import com.example.data.entity.SnapshotEntity
@@ -470,6 +472,8 @@ interface AppDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertEmployment(employment: EmploymentEntity)
 
+
+
     @Update
     suspend fun updateEmployment(employment: EmploymentEntity)
 
@@ -553,4 +557,31 @@ interface AppDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSalaryPostings(postings: List<SalaryPostingEntity>)
+
+    @Query("SELECT * FROM products WHERE deleted = 0")
+    fun getAllProducts(): Flow<List<ProductEntity>>
+
+    @Query("SELECT * FROM products WHERE deleted = 0")
+    suspend fun getAllProductsList(): List<ProductEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertProduct(product: ProductEntity)
+
+    @Update
+    suspend fun updateProduct(product: ProductEntity)
+
+    @Query("SELECT * FROM crops WHERE deleted = 0")
+    fun getAllCrops(): Flow<List<CropEntity>>
+
+    @Query("SELECT * FROM crops WHERE deleted = 0")
+    suspend fun getAllCropsList(): List<CropEntity>
+
+    @Query("SELECT * FROM crops WHERE id = :id AND deleted = 0 LIMIT 1")
+    suspend fun getCropById(id: String): CropEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertCrop(crop: CropEntity)
+
+    @Update
+    suspend fun updateCrop(crop: CropEntity)
 }
