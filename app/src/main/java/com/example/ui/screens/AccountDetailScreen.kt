@@ -70,7 +70,8 @@ fun AccountDetailScreen(
         uiState.pieceWorks,
         uiState.payments,
         uiState.ledgerEntries,
-        uiState.wageRates
+        uiState.wageRates,
+        uiState.salaryRates
     ) {
         WorkforceCalculator.buildAccountLedger(
             accountType = accountType,
@@ -82,7 +83,8 @@ fun AccountDetailScreen(
             wageRates = uiState.wageRates,
             crewsMap = crewsMap,
             tagsMap = tagsMap,
-            personsMap = personsMap
+            personsMap = personsMap,
+            salaryRates = uiState.salaryRates
         )
     }
 

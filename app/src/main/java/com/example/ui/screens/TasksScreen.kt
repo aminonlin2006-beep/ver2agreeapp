@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
@@ -29,6 +30,7 @@ import com.example.data.entity.TagEntity
 import com.example.data.entity.TaskEntity
 import com.example.lib.JalaliDateHelper
 import com.example.lib.NumberFormatHelper
+import com.example.lib.SmsHelper
 import com.example.ui.MainUiState
 import com.example.ui.MainViewModel
 import com.example.ui.components.ConfirmDialog
@@ -49,6 +51,7 @@ fun TasksScreen(
     viewModel: MainViewModel,
     onNavigateBack: () -> Unit
 ) {
+    val context = LocalContext.current
     val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
     var selectedDateIso by remember { mutableStateOf(todayIso) }
     var isCalendarViewOpen by remember { mutableStateOf(false) }
@@ -255,7 +258,30 @@ fun TasksScreen(
                         onMarkCancelled = { viewModel.toggleTaskStatus(task.id, "cancelled") },
                         onReschedule = { taskToReschedule = task },
                         onEdit = { taskToEdit = task },
-                        onDelete = { taskToDelete = task }
+                        onDelete = { taskToDelete = task },
+                        onSendSms = {
+                            val assigneeIds = try {
+                                val arr = org.json.JSONArray(task.assigneePersonIds)
+                                (0 until arr.length()).map { arr.getString(it) }
+                            } catch (_: Exception) { emptyList() }
+
+                            val firstAssignee = assigneeIds.firstNotNullOfOrNull { personsMap[it] }
+                            val workerName = firstAssignee?.name
+                            val workerPhone = firstAssignee?.phone ?: ""
+                            val farmName = task.farmId?.let { farmsMap[it]?.name }
+                            val plotName = task.plotId?.let { plotsMap[it]?.name }
+
+                            val smsText = SmsHelper.buildTaskSmsText(
+                                workerName = workerName,
+                                taskTitle = task.title,
+                                farmName = farmName,
+                                plotName = plotName,
+                                dateIso = task.startDate,
+                                time = task.reminderTime ?: "",
+                                note = task.note
+                            )
+                            SmsHelper.sendSms(context, workerPhone, smsText)
+                        }
                     )
                 }
             }
@@ -325,9 +351,18 @@ fun TasksScreen(
             roles = uiState.roles,
             tags = uiState.tags,
             onDismiss = { showCreateTaskDialog = false },
-            onSave = { title, farmId, plotId, startDate, endDate, priority, assignees, tagId, note ->
+            onSave = { title, farmId, plotId, plotIds, startDate, endDate, priority, assignees, tagId, note ->
                 viewModel.createTask(
-                    title, farmId, plotId, startDate, endDate, priority, assignees, tagId, note
+                    title = title,
+                    farmId = farmId,
+                    plotId = plotId,
+                    plotIds = plotIds,
+                    startDate = startDate,
+                    endDate = endDate,
+                    priority = priority,
+                    assigneePersonIds = assignees,
+                    tagId = tagId,
+                    note = note
                 ) {
                     showCreateTaskDialog = false
                 }
@@ -346,11 +381,12 @@ fun TasksScreen(
             roles = uiState.roles,
             tags = uiState.tags,
             onDismiss = { taskToEdit = null },
-            onSave = { title, farmId, plotId, startDate, endDate, priority, assignees, tagId, note ->
+            onSave = { title, farmId, plotId, plotIds, startDate, endDate, priority, assignees, tagId, note ->
                 val updated = taskToEdit!!.copy(
                     title = title,
                     farmId = farmId,
                     plotId = plotId,
+                    plotIds = org.json.JSONArray(plotIds).toString(),
                     startDate = startDate,
                     endDate = endDate,
                     priority = priority,
@@ -450,7 +486,8 @@ fun TaskItemCard(
     onMarkCancelled: () -> Unit,
     onReschedule: () -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onSendSms: () -> Unit
 ) {
     val priorityColor = when (task.priority) {
         "urgent" -> ColorDangerRed
@@ -629,6 +666,9 @@ fun TaskItemCard(
                     }
 
                     Row {
+                        IconButton(onClick = onSendSms, modifier = Modifier.testTag("task_sms_btn_${task.id}")) {
+                            Icon(Icons.Default.Send, contentDescription = "ارسال پیامک یادآوری کار به کارگر", modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        }
                         IconButton(onClick = onEdit) {
                             Icon(Icons.Default.Edit, contentDescription = "ویرایش", modifier = Modifier.size(18.dp))
                         }

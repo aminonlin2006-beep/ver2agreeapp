@@ -33,6 +33,7 @@ import com.example.data.entity.WageRateEntity
 import com.example.data.entity.WaitingListEntity
 import com.example.data.entity.ProductEntity
 import com.example.data.entity.CropEntity
+import com.example.data.entity.IrrigationScheduleEntity
 
 @Database(
     entities = [
@@ -61,9 +62,10 @@ import com.example.data.entity.CropEntity
         AbsenceEntity::class,
         SalaryPostingEntity::class,
         ProductEntity::class,
-        CropEntity::class
+        CropEntity::class,
+        IrrigationScheduleEntity::class
     ],
-    version = 5,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -439,6 +441,49 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                try {
+                    db.execSQL("ALTER TABLE `tasks` ADD COLUMN `plotIds` TEXT NOT NULL DEFAULT '[]'")
+                } catch (_: Exception) {}
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS `irrigation_schedules` (
+                        `id` TEXT NOT NULL,
+                        `farmId` TEXT NOT NULL,
+                        `plotId` TEXT NOT NULL,
+                        `irrigatorPersonId` TEXT,
+                        `date` TEXT NOT NULL,
+                        `time` TEXT NOT NULL,
+                        `durationHours` REAL,
+                        `waterSource` TEXT,
+                        `status` TEXT NOT NULL,
+                        `reminderEnabled` INTEGER NOT NULL,
+                        `reminderMinutesBefore` INTEGER NOT NULL,
+                        `note` TEXT NOT NULL,
+                        `smsSent` INTEGER NOT NULL,
+                        `createdAt` TEXT NOT NULL,
+                        `updatedAt` TEXT NOT NULL,
+                        `createdBy` TEXT NOT NULL,
+                        `deleted` INTEGER NOT NULL,
+                        `deletedAt` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                """.trimIndent())
+
+                try {
+                    db.execSQL("ALTER TABLE `tasks` ADD COLUMN `reminderTime` TEXT DEFAULT NULL")
+                } catch (_: Exception) {}
+                try {
+                    db.execSQL("ALTER TABLE `tasks` ADD COLUMN `reminderEnabled` INTEGER NOT NULL DEFAULT 0")
+                } catch (_: Exception) {}
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -446,7 +491,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "farm_manager_db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .fallbackToDestructiveMigration(false)
                     .build()
                 INSTANCE = instance

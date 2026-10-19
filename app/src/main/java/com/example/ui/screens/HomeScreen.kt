@@ -47,11 +47,13 @@ fun HomeScreen(
     viewModel: MainViewModel,
     onNavigateToFarms: () -> Unit,
     onNavigateToTasks: () -> Unit,
+    onNavigateToIrrigation: () -> Unit = {},
     onNavigateToPersons: () -> Unit,
     onNavigateToTags: () -> Unit,
     onNavigateToWorkforce: () -> Unit,
     onNavigateToExpenses: () -> Unit,
     onNavigateToCrops: () -> Unit = {},
+    onNavigateToReports: () -> Unit = {},
     onNavigateToLedger: () -> Unit,
     onNavigateToBackup: () -> Unit,
     onNavigateToSettings: () -> Unit
@@ -548,6 +550,18 @@ fun HomeScreen(
                             onLongClick = { selectedTileForOptions = "farms" }
                         )
                     }
+                    "irrigation" -> {
+                        if (uiState.isIrrigationModuleActive) {
+                            val upCount = uiState.irrigationSchedules.count { !it.deleted && it.status == "scheduled" }
+                            val tdCount = uiState.irrigationSchedules.count { !it.deleted && it.date == todayIso && it.status == "scheduled" }
+                            IrrigationHomeTile(
+                                upcomingCount = upCount,
+                                todayCount = tdCount,
+                                onClick = onNavigateToIrrigation,
+                                onLongClick = { selectedTileForOptions = "irrigation" }
+                            )
+                        }
+                    }
                     "tasks" -> {
                         if (uiState.isTasksModuleActive) {
                             TaskHomeTile(
@@ -589,6 +603,14 @@ fun HomeScreen(
                             onLongClick = { selectedTileForOptions = "crops" }
                         )
                     }
+                    "reports" -> {
+                        if (uiState.isReportsModuleActive) {
+                            ReportsHomeTile(
+                                onClick = onNavigateToReports,
+                                onLongClick = { selectedTileForOptions = "reports" }
+                            )
+                        }
+                    }
                     "persons" -> {
                         PersonHomeTile(
                             count = uiState.persons.size,
@@ -624,9 +646,13 @@ fun HomeScreen(
                             uiState.hiddenTileKeys.forEach { key ->
                                 val title = when (key) {
                                     "farms" -> "مزرعه‌ها"
+                                    "irrigation" -> "زمان‌بندی آبیاری"
                                     "tasks" -> "کارهای آینده"
                                     "workforce" -> "نیروی کار"
                                     "ledger" -> "دفتر حساب"
+                                    "expenses" -> "هزینه‌ها"
+                                    "crops" -> "کشت‌ها"
+                                    "reports" -> "گزارش‌ها"
                                     "persons" -> "اشخاص"
                                     "tags" -> "برچسب‌ها"
                                     else -> key
@@ -651,9 +677,13 @@ fun HomeScreen(
         val tile = selectedTileForOptions!!
         val tileTitle = when (tile) {
             "farms" -> "مزرعه‌ها"
+            "irrigation" -> "زمان‌بندی آبیاری"
             "tasks" -> "کارهای آینده"
             "workforce" -> "نیروی کار"
             "ledger" -> "دفتر حساب"
+            "expenses" -> "هزینه‌ها"
+            "crops" -> "کشت‌ها"
+            "reports" -> "گزارش‌ها"
             "persons" -> "اشخاص"
             "tags" -> "برچسب‌ها"
             else -> ""
@@ -730,6 +760,34 @@ private fun FarmHomeTile(
         onClick = onClick,
         onLongClick = onLongClick,
         testTag = "home_tile_farms"
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun IrrigationHomeTile(
+    upcomingCount: Int,
+    todayCount: Int,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    val subtitle = if (todayCount > 0) {
+        val todayFa = NumberFormatHelper.toPersianDigits(todayCount)
+        val upFa = NumberFormatHelper.toPersianDigits(upcomingCount)
+        "$todayFa نوبت امروز • $upFa در انتظار"
+    } else {
+        "${NumberFormatHelper.toPersianDigits(upcomingCount)} نوبت آبیاری قطعات"
+    }
+
+    BigHomeCard(
+        title = "زمان‌بندی آبیاری",
+        subtitle = subtitle,
+        icon = Icons.Default.WaterDrop,
+        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+        contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        testTag = "home_tile_irrigation"
     )
 }
 
@@ -934,5 +992,23 @@ private fun CropHomeTile(
         onClick = onClick,
         onLongClick = onLongClick,
         testTag = "crop_tile"
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ReportsHomeTile(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    BigHomeCard(
+        title = "گزارش‌ها و نمودارها",
+        subtitle = "نمودار خطی هزینه‌ها و حقوق",
+        icon = Icons.Default.ShowChart,
+        containerColor = MaterialTheme.colorScheme.primaryContainer,
+        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+        onClick = onClick,
+        onLongClick = onLongClick,
+        testTag = "reports_tile"
     )
 }

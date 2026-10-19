@@ -113,6 +113,7 @@ data class TaskEntity(
     val title: String,
     val farmId: String? = null,
     val plotId: String? = null,
+    val plotIds: String = "[]", // JSON array of plot IDs
     val startDate: String, // ISO date "YYYY-MM-DD"
     val endDate: String,   // ISO date "YYYY-MM-DD"
     val priority: String = "normal", // "urgent" | "important" | "normal"
@@ -122,6 +123,8 @@ data class TaskEntity(
     val cropId: String? = null,
     val note: String = "",
     val status: String = "open", // "open" | "done" | "cancelled"
+    val reminderTime: String? = null,
+    val reminderEnabled: Boolean = false,
     val closedAt: String? = null,
     val rescheduleCount: Int = 0,
     val createdAt: String = Instant.now().toString(),
@@ -130,6 +133,9 @@ data class TaskEntity(
     val deleted: Boolean = false,
     val deletedAt: String? = null
 )
+
+typealias WorkTask = TaskEntity
+typealias WorkTaskEntity = TaskEntity
 
 @Entity(tableName = "crews")
 data class CrewEntity(
@@ -413,3 +419,26 @@ data class CropEntity(
     val deleted: Boolean = false,
     val deletedAt: String? = null
 )
+
+@Entity(tableName = "irrigation_schedules")
+data class IrrigationScheduleEntity(
+    @PrimaryKey val id: String = UUID.randomUUID().toString(),
+    val farmId: String,
+    val plotId: String,
+    val irrigatorPersonId: String? = null, // personId of irrigator
+    val date: String, // ISO date "YYYY-MM-DD"
+    val time: String = "18:00", // "HH:mm" e.g. "18:00" or "09:00"
+    val durationHours: Double? = 2.0, // Duration in hours
+    val waterSource: String? = "well", // "well" | "canal" | "pool" | etc.
+    val status: String = "scheduled", // "scheduled" | "done" | "cancelled"
+    val reminderEnabled: Boolean = true,
+    val reminderMinutesBefore: Int = 30, // 0 (at time), 15, 30, 60
+    val note: String = "",
+    val smsSent: Boolean = false,
+    val createdAt: String = Instant.now().toString(),
+    val updatedAt: String = Instant.now().toString(),
+    val createdBy: String = "owner",
+    val deleted: Boolean = false,
+    val deletedAt: String? = null
+)
+

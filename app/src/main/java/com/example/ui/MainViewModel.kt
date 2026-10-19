@@ -38,6 +38,8 @@ import com.example.data.entity.SalaryRateEntity
 import com.example.data.entity.WageRateEntity
 import com.example.data.entity.WaitingListEntity
 import com.example.data.entity.AbsenceEntity
+import com.example.data.entity.IrrigationScheduleEntity
+import kotlinx.coroutines.flow.update
 
 data class MainUiState(
     val farms: List<FarmEntity> = emptyList(),
@@ -63,12 +65,15 @@ data class MainUiState(
     val salaryPostings: List<SalaryPostingEntity> = emptyList(),
     val crops: List<CropEntity> = emptyList(),
     val products: List<ProductEntity> = emptyList(),
+    val irrigationSchedules: List<IrrigationScheduleEntity> = emptyList(),
     val snapshots: List<SnapshotEntity> = emptyList(),
     val unsentChanges: Int = 0,
     val isZeraatActive: Boolean = true,
     val isNahalestanActive: Boolean = true,
     val isTasksModuleActive: Boolean = true,
     val isWorkforceModuleActive: Boolean = true,
+    val isReportsModuleActive: Boolean = true,
+    val isIrrigationModuleActive: Boolean = true,
     val foremanCoefPresent: Int = 2,
     val foremanCoefAbsent: Int = 1,
     val tomorrowTasksHour: String = "18:00",
@@ -77,7 +82,7 @@ data class MainUiState(
     val isGuideDismissed: Boolean = false,
     val lastBackupReminderDate: String = "",
     val lastExportAt: String = "",
-    val tileOrder: List<String> = listOf("farms", "tasks", "workforce", "ledger", "persons", "tags"),
+    val tileOrder: List<String> = listOf("farms", "irrigation", "tasks", "workforce", "ledger", "expenses", "crops", "reports", "persons", "tags"),
     val hiddenTileKeys: Set<String> = emptySet(),
     val isInitialized: Boolean = false
 )
@@ -95,6 +100,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private data class Combined4(val c: CoreData, val t: List<TaskEntity>, val w: WorkforceData, val w2: Workforce2Data)
     private data class Combined5(val c: CoreData, val t: List<TaskEntity>, val w: WorkforceData, val w2: Workforce2Data, val l: LedgerData)
     private data class Combined6(val c: CoreData, val t: List<TaskEntity>, val w: WorkforceData, val w2: Workforce2Data, val l: LedgerData, val e: ExpenseData)
+    private data class Combined7(val c: CoreData, val t: List<TaskEntity>, val w: WorkforceData, val w2: Workforce2Data, val l: LedgerData, val e: ExpenseData, val cr: CropData)
 
     private data class CombinedData(
         val core: CoreData,
@@ -103,7 +109,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val workforce2: Workforce2Data,
         val ledger: LedgerData,
         val expense: ExpenseData,
-        val crop: CropData
+        val crop: CropData,
+        val irrigation: List<IrrigationScheduleEntity>
     )
 
     val gateway = DataGateway(application)
@@ -214,7 +221,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .combine(ledgerFlow) { (core, tasks, workforce, workforce2), ledger -> Combined5(core, tasks, workforce, workforce2, ledger) }
                 .combine(expenseFlow) { (core, tasks, workforce, workforce2, ledger), expense -> Combined6(core, tasks, workforce, workforce2, ledger, expense) }
                 .combine(cropFlow) { (core, tasks, workforce, workforce2, ledger, expense), crop ->
-                    CombinedData(core, tasks, workforce, workforce2, ledger, expense, crop)
+                    Combined7(core, tasks, workforce, workforce2, ledger, expense, crop)
+                }
+                .combine(gateway.getAllIrrigationSchedulesFlow()) { c7, irrigation ->
+                    CombinedData(c7.c, c7.t, c7.w, c7.w2, c7.l, c7.e, c7.cr, irrigation)
                 }
 
 
@@ -231,17 +241,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val ledger = combined.ledger
                 val expense = combined.expense
                 val crop = combined.crop
+                val irrigation = combined.irrigation
                 val settingsMap = settingsList.associate { it.key to it.value }
 
                 val unsent = settingsMap["unsentChanges"]?.toIntOrNull() ?: 0
                 val workTypesJson = settingsMap["workTypes"] ?: """{"zeraat":true,"nahalestan":true}"""
                 val (zeraat, nahalestan) = parseWorkTypes(workTypesJson)
 
-                val modulesJson = settingsMap["modules"] ?: """{"tasks":true,"workforce":true}"""
-                val (tasksModuleActive, workforceModuleActive) = try {
+                val modulesJson = settingsMap["modules"] ?: """{"tasks":true,"workforce":true,"reports":true,"irrigation":true}"""
+                val (tasksModuleActive, workforceModuleActive, reportsModuleActive, irrigationModuleActive) = try {
                     val mObj = JSONObject(modulesJson)
-                    Pair(mObj.optBoolean("tasks", true), mObj.optBoolean("workforce", true))
-                } catch (_: Exception) { Pair(true, true) }
+                    listOf(
+                        mObj.optBoolean("tasks", true),
+                        mObj.optBoolean("workforce", true),
+                        mObj.optBoolean("reports", true),
+                        mObj.optBoolean("irrigation", true)
+                    )
+                } catch (_: Exception) { listOf(true, true, true, true) }
 
                 val (cp, ca) = try {
                     val fc = JSONObject(settingsMap["foremanCoefficients"] ?: """{"present":2,"absent":1}""")
@@ -261,11 +277,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     .filter { it.isNotBlank() }
                     .toSet()
 
-                val order = (settingsMap["tileOrder"] ?: "farms,tasks,workforce,ledger,persons,tags")
+                val order = (settingsMap["tileOrder"] ?: "farms,irrigation,tasks,workforce,ledger,expenses,crops,reports,persons,tags")
                     .split(",")
                     .filter { it.isNotBlank() }
 
-                val defaultOrder = listOf("farms", "tasks", "workforce", "ledger", "persons", "tags")
+                val defaultOrder = listOf("farms", "irrigation", "tasks", "workforce", "ledger", "expenses", "crops", "reports", "persons", "tags")
                 val finalOrder = if (order.isNotEmpty()) {
                     (order + defaultOrder).distinct()
                 } else defaultOrder
@@ -294,12 +310,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     salaryPostings = workforce2.postings,
                     crops = crop.crops,
                     products = crop.products,
+                    irrigationSchedules = irrigation,
                     snapshots = snapshots,
                     unsentChanges = unsent,
                     isZeraatActive = zeraat,
                     isNahalestanActive = nahalestan,
                     isTasksModuleActive = tasksModuleActive,
                     isWorkforceModuleActive = workforceModuleActive,
+                    isReportsModuleActive = reportsModuleActive,
+                    isIrrigationModuleActive = irrigationModuleActive,
                     foremanCoefPresent = cp,
                     foremanCoefAbsent = ca,
                     tomorrowTasksHour = tomorrowHour,
@@ -603,33 +622,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         title: String,
         farmId: String?,
         plotId: String?,
-        startDate: String,
-        endDate: String,
-        priority: String,
-        assigneePersonIds: List<String>,
-        tagId: String?,
-        note: String,
-        onSuccess: () -> Unit
-    ) {
-        createTask(
-            title = title,
-            farmId = farmId,
-            plotId = plotId,
-            startDate = startDate,
-            endDate = endDate,
-            priority = priority,
-            assigneePersonIds = assigneePersonIds,
-            assigneeCrewId = null,
-            tagId = tagId,
-            note = note,
-            onSuccess = onSuccess
-        )
-    }
-
-    fun createTask(
-        title: String,
-        farmId: String?,
-        plotId: String?,
+        plotIds: List<String> = emptyList(),
         startDate: String,
         endDate: String,
         priority: String,
@@ -644,6 +637,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 title = title,
                 farmId = farmId,
                 plotId = plotId,
+                plotIds = plotIds,
                 startDate = startDate,
                 endDate = endDate,
                 priority = priority,
@@ -653,6 +647,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 note = note
             )
             onSuccess()
+        }
+    }
+
+    fun completeTaskWithSmartAttendance(
+        task: TaskEntity,
+        date: String,
+        farmId: String?,
+        plotId: String?,
+        crewId: String,
+        tagId: String,
+        assignedWorkerIds: List<String>,
+        note: String,
+        onComplete: (addedNewAttendance: Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            val added = gateway.syncTaskCompletionAttendance(
+                task = task,
+                date = date,
+                farmId = farmId,
+                plotId = plotId,
+                crewId = crewId,
+                tagId = tagId,
+                assignedWorkerIds = assignedWorkerIds,
+                note = note
+            )
+            gateway.toggleTaskStatus(task.id, "done")
+            onComplete(added)
         }
     }
 
@@ -767,6 +788,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) {
         viewModelScope.launch {
             gateway.createAttendance(date, farmId, plotId, crewId, tagId, lines, headcount, countTicks, foreman, note)
+            onSuccess()
+        }
+    }
+
+    fun toggleWorkerAttendance(date: String, personId: String, isPresent: Boolean, ticks: Int = 1, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            gateway.toggleWorkerAttendanceForDate(date, personId, isPresent, ticks)
+            onSuccess()
+        }
+    }
+
+    fun toggleCrewAttendance(date: String, crewId: String, isPresent: Boolean, onSuccess: () -> Unit = {}) {
+        viewModelScope.launch {
+            gateway.toggleCrewAttendanceForDate(date, crewId, isPresent)
             onSuccess()
         }
     }
@@ -936,10 +971,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val isCurrentActive = when (moduleKey) {
                 "tasks" -> currentMod.isTasksModuleActive
                 "workforce" -> currentMod.isWorkforceModuleActive
+                "reports" -> currentMod.isReportsModuleActive
                 else -> true
             }
             val newActive = !isCurrentActive
-            val modStr = gateway.getSetting("modules") ?: """{"tasks":true,"workforce":true}"""
+            val modStr = gateway.getSetting("modules") ?: """{"tasks":true,"workforce":true,"reports":true}"""
             val obj = try { JSONObject(modStr) } catch (_: Exception) { JSONObject() }
             obj.put(moduleKey, newActive)
             gateway.setSetting("modules", obj.toString())
@@ -952,6 +988,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleWorkforceModule() {
         toggleModule("workforce")
+    }
+
+    fun toggleReportsModule() {
+        toggleModule("reports")
     }
 
     fun setForemanCoefficients(present: Int, absent: Int) {
@@ -1050,15 +1090,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun saveEmployment(employment: EmploymentEntity, salary: Long) {
+    fun saveEmployment(employment: EmploymentEntity, salary: Long, applyUpToToday: Boolean = false) {
         viewModelScope.launch {
-            val existing = gateway.getAllEmploymentsList().find { it.personId == employment.personId && !it.deleted }
-            if (existing != null) {
-                gateway.updateEmployment(employment.copy(id = existing.id))
-            } else {
-                gateway.insertEmployment(employment)
-            }
-            gateway.insertSalaryRate(SalaryRateEntity(personId = employment.personId, monthlySalary = salary, effectiveFrom = employment.salaryFromMonth + "-01"))
+            gateway.saveEmploymentWithRetroactive(employment, salary, applyUpToToday)
         }
     }
 
@@ -1070,6 +1104,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         note: String,
         foremanId: String?,
         workerIds: List<String>,
+        monthlySalary: Long? = null,
+        salaryFromMonth: String? = null,
+        applyRetroactiveSalary: Boolean = false,
         onSuccess: () -> Unit
     ) {
         viewModelScope.launch {
@@ -1137,6 +1174,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            // 3. If monthly salary is set: save employment and apply retroactive if requested
+            if (monthlySalary != null && monthlySalary > 0L) {
+                val effectiveMonth = salaryFromMonth ?: JalaliDateHelper.today().monthKey
+                val startIso = if (!salaryFromMonth.isNullOrBlank()) {
+                    val p = salaryFromMonth.split("-")
+                    val yr = p[0].toIntOrNull() ?: JalaliDateHelper.today().year
+                    val mo = p.getOrNull(1)?.toIntOrNull() ?: JalaliDateHelper.today().month
+                    JalaliDateHelper.toIsoDate(JalaliDateHelper.toGregorian(yr, mo, 1))
+                } else todayIso
+
+                val emp = EmploymentEntity(
+                    personId = person.id,
+                    kind = "fixed",
+                    salaryFromMonth = effectiveMonth,
+                    workStartDate = startIso
+                )
+                gateway.saveEmploymentWithRetroactive(emp, monthlySalary, applyRetroactiveSalary)
+            }
+
             onSuccess()
         }
     }
@@ -1188,6 +1244,78 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun deleteCrop(crop: CropEntity, onSuccess: () -> Unit = {}) {
         viewModelScope.launch {
             gateway.updateCrop(crop.copy(deleted = true, deletedAt = java.time.Instant.now().toString()))
+            onSuccess()
+        }
+    }
+
+    // --- IRRIGATION SCHEDULES ---
+    fun createIrrigationSchedule(
+        farmId: String,
+        plotId: String,
+        irrigatorPersonId: String?,
+        date: String,
+        time: String,
+        durationHours: Double?,
+        waterSource: String?,
+        reminderEnabled: Boolean,
+        reminderMinutesBefore: Int,
+        note: String,
+        onSuccess: (IrrigationScheduleEntity) -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            val entity = gateway.createIrrigationSchedule(
+                farmId = farmId,
+                plotId = plotId,
+                irrigatorPersonId = irrigatorPersonId,
+                date = date,
+                time = time,
+                durationHours = durationHours,
+                waterSource = waterSource,
+                reminderEnabled = reminderEnabled,
+                reminderMinutesBefore = reminderMinutesBefore,
+                note = note
+            )
+            onSuccess(entity)
+        }
+    }
+
+    fun updateIrrigationSchedule(
+        schedule: IrrigationScheduleEntity,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            gateway.updateIrrigationSchedule(schedule)
+            onSuccess()
+        }
+    }
+
+    fun toggleIrrigationStatus(
+        scheduleId: String,
+        newStatus: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            gateway.toggleIrrigationStatus(scheduleId, newStatus)
+            onSuccess()
+        }
+    }
+
+    fun markIrrigationSmsSent(
+        scheduleId: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            gateway.markIrrigationSmsSent(scheduleId)
+            onSuccess()
+        }
+    }
+
+    fun deleteIrrigationSchedule(
+        scheduleId: String,
+        onSuccess: () -> Unit = {}
+    ) {
+        viewModelScope.launch {
+            gateway.deleteIrrigationSchedule(scheduleId)
             onSuccess()
         }
     }

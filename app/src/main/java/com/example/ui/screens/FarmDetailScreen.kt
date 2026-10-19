@@ -23,6 +23,7 @@ import com.example.lib.NumberFormatHelper
 import com.example.ui.MainUiState
 import com.example.ui.MainViewModel
 import com.example.ui.components.ConfirmDialog
+import com.example.ui.components.IrrigationFormDialog
 import com.example.ui.theme.ColorDangerRed
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -56,6 +57,7 @@ fun FarmDetailScreen(
     var showCreatePlotDialog by remember { mutableStateOf(false) }
     var plotToEdit by remember { mutableStateOf<PlotEntity?>(null) }
     var plotToDelete by remember { mutableStateOf<PlotEntity?>(null) }
+    var plotForIrrigation by remember { mutableStateOf<PlotEntity?>(null) }
     var showInactivePlots by remember { mutableStateOf(false) }
     var alertMessage by remember { mutableStateOf<String?>(null) }
 
@@ -283,7 +285,8 @@ fun FarmDetailScreen(
                         plotCost = plotCost,
                         onEdit = { plotToEdit = plot },
                         onToggleActive = { viewModel.togglePlotActive(plot) },
-                        onDelete = { plotToDelete = plot }
+                        onDelete = { plotToDelete = plot },
+                        onScheduleIrrigation = { plotForIrrigation = plot }
                     )
                 }
 
@@ -329,7 +332,8 @@ fun FarmDetailScreen(
                                                 plotCost = plotCost,
                                                 onEdit = { plotToEdit = plot },
                                                 onToggleActive = { viewModel.togglePlotActive(plot) },
-                                                onDelete = { plotToDelete = plot }
+                                                onDelete = { plotToDelete = plot },
+                                                onScheduleIrrigation = { plotForIrrigation = plot }
                                             )
                                         }
                                     }
@@ -453,6 +457,33 @@ fun FarmDetailScreen(
             }
         )
     }
+
+    if (plotForIrrigation != null) {
+        IrrigationFormDialog(
+            farms = uiState.farms,
+            plots = uiState.plots,
+            persons = uiState.persons,
+            preSelectedFarmId = farmId,
+            preSelectedPlotId = plotForIrrigation!!.id,
+            onDismiss = { plotForIrrigation = null },
+            onSave = { fId, pId, irrId, dateIso, time, dur, src, rem, remMin, note ->
+                viewModel.createIrrigationSchedule(
+                    farmId = fId,
+                    plotId = pId,
+                    irrigatorPersonId = irrId,
+                    date = dateIso,
+                    time = time,
+                    durationHours = dur,
+                    waterSource = src,
+                    reminderEnabled = rem,
+                    reminderMinutesBefore = remMin,
+                    note = note
+                ) {
+                    plotForIrrigation = null
+                }
+            }
+        )
+    }
 }
 
 private fun getFarmDefaultWorkType(plots: List<PlotEntity>): String {
@@ -466,7 +497,8 @@ fun PlotItemCard(
     plotCost: Long = 0L,
     onEdit: () -> Unit,
     onToggleActive: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onScheduleIrrigation: () -> Unit = {}
 ) {
     Card(
         shape = RoundedCornerShape(12.dp),
@@ -560,6 +592,9 @@ fun PlotItemCard(
             }
 
             Row {
+                IconButton(onClick = onScheduleIrrigation) {
+                    Icon(Icons.Default.WaterDrop, contentDescription = "برنامه‌ریزی آبیاری", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                }
                 IconButton(onClick = onEdit) {
                     Icon(Icons.Default.Edit, contentDescription = "ویرایش", modifier = Modifier.size(20.dp))
                 }

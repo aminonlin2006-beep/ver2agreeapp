@@ -1,13 +1,19 @@
 package com.example
 
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavType
@@ -27,6 +33,15 @@ class MainActivity : ComponentActivity() {
             val viewModel: MainViewModel = viewModel()
             val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val launcher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.RequestPermission()
+                ) {}
+                LaunchedEffect(Unit) {
+                    launcher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+
             FarmManagerTheme(
                 darkTheme = uiState.isDarkTheme,
                 fontScale = uiState.fontScale
@@ -42,6 +57,17 @@ fun FarmManagerApp(viewModel: MainViewModel) {
     val navController = rememberNavController()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
 
+    val context = LocalContext.current
+    val targetScreen = remember {
+        (context as? ComponentActivity)?.intent?.getStringExtra("target_screen")
+    }
+
+    LaunchedEffect(targetScreen) {
+        if (!targetScreen.isNullOrBlank()) {
+            navController.navigate(targetScreen)
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = "home",
@@ -53,14 +79,32 @@ fun FarmManagerApp(viewModel: MainViewModel) {
                 viewModel = viewModel,
                 onNavigateToFarms = { navController.navigate("farms") },
                 onNavigateToTasks = { navController.navigate("tasks") },
+                onNavigateToIrrigation = { navController.navigate("irrigation") },
                 onNavigateToPersons = { navController.navigate("persons") },
                 onNavigateToTags = { navController.navigate("tags") },
                 onNavigateToWorkforce = { navController.navigate("workforce") },
                 onNavigateToExpenses = { navController.navigate("expenses") },
                 onNavigateToCrops = { navController.navigate("crops") },
+                onNavigateToReports = { navController.navigate("reports") },
                 onNavigateToLedger = { navController.navigate("ledger") },
                 onNavigateToBackup = { navController.navigate("backup") },
                 onNavigateToSettings = { navController.navigate("settings") }
+            )
+        }
+
+        composable("irrigation") {
+            IrrigationScreen(
+                uiState = uiState,
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        composable("reports") {
+            ReportsScreen(
+                uiState = uiState,
+                viewModel = viewModel,
+                onNavigateBack = { navController.popBackStack() }
             )
         }
 

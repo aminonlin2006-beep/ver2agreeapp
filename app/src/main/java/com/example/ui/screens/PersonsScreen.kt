@@ -17,14 +17,17 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import com.example.ui.components.EmploymentDialog
 import com.example.ui.components.TeamManagementDialog
+import com.example.ui.components.JalaliDatePickerDialog
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.data.entity.CrewEntity
 import com.example.data.entity.CrewMemberEntity
+import com.example.data.entity.EmploymentEntity
 import com.example.data.entity.PersonEntity
 import com.example.data.entity.RoleEntity
+import com.example.lib.JalaliDateHelper
 import com.example.lib.NumberFormatHelper
 import com.example.ui.MainUiState
 import com.example.ui.MainViewModel
@@ -57,11 +60,12 @@ fun PersonsScreen(
         val salaryRate = uiState.salaryRates.find { it.personId == person.id && !it.deleted }?.monthlySalary ?: 0L
         EmploymentDialog(
             personId = person.id,
+            personName = person.name,
             initialEmployment = employment,
             initialSalary = salaryRate,
             onDismiss = { personToEmploy = null },
-            onSave = { e, salary ->
-                viewModel.saveEmployment(e, salary)
+            onSave = { e, salary, applyUpToToday ->
+                viewModel.saveEmployment(e, salary, applyUpToToday)
                 personToEmploy = null
             }
         )
@@ -292,7 +296,7 @@ fun PersonsScreen(
             crews = uiState.crews,
             crewMembers = uiState.crewMembers,
             onDismiss = { showCreatePersonDialog = false },
-            onSave = { name, phone, roleIds, note, foremanId, workerIds ->
+            onSave = { name, phone, roleIds, note, foremanId, workerIds, monthlySalary, salaryMonth, applyRetro ->
                 viewModel.savePersonWithRelations(
                     personId = null,
                     name = name,
@@ -301,6 +305,9 @@ fun PersonsScreen(
                     note = note,
                     foremanId = foremanId,
                     workerIds = workerIds,
+                    monthlySalary = monthlySalary,
+                    salaryFromMonth = salaryMonth,
+                    applyRetroactiveSalary = applyRetro,
                     onSuccess = { showCreatePersonDialog = false }
                 )
             }
@@ -309,22 +316,30 @@ fun PersonsScreen(
 
     // --- EDIT PERSON DIALOG ---
     if (personToEdit != null) {
+        val p = personToEdit!!
+        val emp = uiState.employments.find { it.personId == p.id && !it.deleted }
+        val sal = uiState.salaryRates.find { it.personId == p.id && !it.deleted }?.monthlySalary ?: 0L
         PersonFormDialog(
-            initialPerson = personToEdit,
+            initialPerson = p,
+            initialEmployment = emp,
+            initialSalary = sal,
             availableRoles = uiState.roles, // Show even hidden roles if this person already has it
             allPersons = uiState.persons,
             crews = uiState.crews,
             crewMembers = uiState.crewMembers,
             onDismiss = { personToEdit = null },
-            onSave = { name, phone, roleIds, note, foremanId, workerIds ->
+            onSave = { name, phone, roleIds, note, foremanId, workerIds, monthlySalary, salaryMonth, applyRetro ->
                 viewModel.savePersonWithRelations(
-                    personId = personToEdit!!.id,
+                    personId = p.id,
                     name = name,
                     phone = phone,
                     roleIds = roleIds,
                     note = note,
                     foremanId = foremanId,
                     workerIds = workerIds,
+                    monthlySalary = monthlySalary,
+                    salaryFromMonth = salaryMonth,
+                    applyRetroactiveSalary = applyRetro,
                     onSuccess = { personToEdit = null }
                 )
             }
@@ -512,12 +527,14 @@ fun PersonCard(
 @Composable
 fun PersonFormDialog(
     initialPerson: PersonEntity? = null,
+    initialEmployment: EmploymentEntity? = null,
+    initialSalary: Long = 0L,
     availableRoles: List<RoleEntity>,
     allPersons: List<PersonEntity>,
     crews: List<CrewEntity>,
     crewMembers: List<CrewMemberEntity>,
     onDismiss: () -> Unit,
-    onSave: (name: String, phone: String, roleIds: List<String>, note: String, foremanId: String?, workerIds: List<String>) -> Unit
+    onSave: (name: String, phone: String, roleIds: List<String>, note: String, foremanId: String?, workerIds: List<String>, monthlySalary: Long?, salaryFromMonth: String?, applyRetroactive: Boolean) -> Unit
 ) {
     var name by remember { mutableStateOf(initialPerson?.name ?: "") }
     var phone by remember { mutableStateOf(initialPerson?.phone ?: "") }
@@ -543,6 +560,28 @@ fun PersonFormDialog(
     val workerRole = availableRoles.find { it.builtInKey == "worker" || it.name == "کارگر" }
     val isForeman = foremanRole != null && selectedRoleIds.contains(foremanRole.id)
     val isWorker = workerRole != null && selectedRoleIds.contains(workerRole.id)
+
+    // Salary state
+    var monthlySalaryInput by remember { mutableStateOf(if (initialSalary > 0) initialSalary.toString() else "") }
+    val currentJalali = remember { JalaliDateHelper.today() }
+    val initialIsoDate = remember(initialEmployment) {
+        if (!initialEmployment?.salaryFromMonth.isNullOrBlank()) {
+            val parts = initialEmployment!!.salaryFromMonth.split("-")
+            val yr = parts.getOrNull(0)?.toIntOrNull() ?: currentJalali.year
+            val mo = parts.getOrNull(1)?.toIntOrNull() ?: currentJalali.month
+            val g = JalaliDateHelper.toGregorian(yr, mo, 1)
+            JalaliDateHelper.toIsoDate(g)
+        } else {
+            JalaliDateHelper.toIsoDate(java.time.LocalDate.now())
+        }
+    }
+    var selectedSalaryIsoDate by remember { mutableStateOf(initialIsoDate) }
+    var showSalaryDatePicker by remember { mutableStateOf(false) }
+    var applyRetroactiveSalary by remember { mutableStateOf(true) }
+    val selectedSalaryJalali = remember(selectedSalaryIsoDate) { JalaliDateHelper.fromIsoDate(selectedSalaryIsoDate) }
+    val salaryMonthKey = selectedSalaryJalali.monthKey
+    val isPastMonth = salaryMonthKey < currentJalali.monthKey
+    val salaryLong = NumberFormatHelper.parsePersianLong(monthlySalaryInput) ?: 0L
 
     val initialForemanId = remember(initialPerson, crews, crewMembers) {
         if (initialPerson != null) {
@@ -745,6 +784,64 @@ fun PersonFormDialog(
                     }
                 }
 
+                // Monthly Salary Section
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.25f)),
+                        shape = RoundedCornerShape(16.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Text("حقوق ثابت ماهانه (اختیاری)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            OutlinedTextField(
+                                value = monthlySalaryInput,
+                                onValueChange = { monthlySalaryInput = it },
+                                label = { Text("حقوق ماهانه (تومان)") },
+                                singleLine = true,
+                                supportingText = if (salaryLong > 0) {
+                                    { Text(NumberFormatHelper.formatTomanFull(salaryLong), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) }
+                                } else null,
+                                modifier = Modifier.fillMaxWidth().testTag("person_monthly_salary_input")
+                            )
+
+                            if (salaryLong > 0) {
+                                Card(
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                                    modifier = Modifier.fillMaxWidth().clickable { showSalaryDatePicker = true }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Column {
+                                            Text("تاریخ شروع حقوق:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                            Text("${selectedSalaryJalali.monthName} ${NumberFormatHelper.toPersianDigits(selectedSalaryJalali.year)}", fontWeight = FontWeight.Bold)
+                                        }
+                                        Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+
+                                if (isPastMonth) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth().clickable { applyRetroactiveSalary = !applyRetroactiveSalary }.padding(vertical = 4.dp)
+                                    ) {
+                                        Checkbox(checked = applyRetroactiveSalary, onCheckedChange = { applyRetroactiveSalary = it })
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            "اعمال حقوق و کارکرد برای ماه‌های گذشته تا امروز",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 item {
                     OutlinedTextField(
                         value = note,
@@ -759,7 +856,17 @@ fun PersonFormDialog(
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(name, phone, selectedRoleIds.toList(), note, selectedForemanId, selectedWorkerIds.toList())
+                    onSave(
+                        name,
+                        phone,
+                        selectedRoleIds.toList(),
+                        note,
+                        selectedForemanId,
+                        selectedWorkerIds.toList(),
+                        if (salaryLong > 0) salaryLong else null,
+                        salaryMonthKey,
+                        applyRetroactiveSalary
+                    )
                 },
                 enabled = name.isNotBlank(),
                 modifier = Modifier.fillMaxWidth().testTag("save_person_btn")
@@ -773,6 +880,17 @@ fun PersonFormDialog(
             }
         }
     )
+
+    if (showSalaryDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = selectedSalaryIsoDate,
+            onDismiss = { showSalaryDatePicker = false },
+            onDateSelected = { iso ->
+                selectedSalaryIsoDate = iso
+                showSalaryDatePicker = false
+            }
+        )
+    }
 }
 
 @Composable

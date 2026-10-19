@@ -71,7 +71,8 @@ object WorkforceCalculator {
         wageRates: List<WageRateEntity>,
         crewId: String,
         personId: String?,
-        date: String
+        date: String,
+        salaryRates: List<SalaryRateEntity> = emptyList()
     ): Long {
         if (personId != null) {
             val personalRate = wageRates
@@ -79,6 +80,12 @@ object WorkforceCalculator {
                 .maxByOrNull { it.effectiveFrom }
             if (personalRate != null) {
                 return personalRate.dailyWage
+            }
+            val salaryRate = salaryRates
+                .filter { it.personId == personId && it.effectiveFrom <= date && !it.deleted }
+                .maxByOrNull { it.effectiveFrom }
+            if (salaryRate != null && salaryRate.monthlySalary > 0L) {
+                return NumberFormatHelper.roundToThousand(salaryRate.monthlySalary / 30L)
             }
         }
         val crewRate = wageRates
@@ -95,9 +102,10 @@ object WorkforceCalculator {
         attendance: AttendanceEntity,
         crew: CrewEntity,
         wageRates: List<WageRateEntity>,
-        personsMap: Map<String, PersonEntity>
+        personsMap: Map<String, PersonEntity>,
+        salaryRates: List<SalaryRateEntity> = emptyList()
     ): CalculatedAttendance {
-        val crewBaseWage = getEffectiveDailyWage(wageRates, crew.id, null, attendance.date)
+        val crewBaseWage = getEffectiveDailyWage(wageRates, crew.id, null, attendance.date, salaryRates)
 
         if (crew.kind == "count") {
             val headcount = attendance.headcount ?: 0
@@ -159,7 +167,7 @@ object WorkforceCalculator {
                     val obj = arr.getJSONObject(i)
                     val personId = obj.getString("personId")
                     val ticks = obj.optInt("ticks", 1).coerceAtLeast(1)
-                    val wage = getEffectiveDailyWage(wageRates, crew.id, personId, attendance.date)
+                    val wage = getEffectiveDailyWage(wageRates, crew.id, personId, attendance.date, salaryRates)
                     val lineTotal = ticks.toLong() * wage
                     memberTotal += lineTotal
                     memberUnits += ticks
@@ -295,17 +303,31 @@ object WorkforceCalculator {
         tagsMap: Map<String, TagEntity>,
         personsMap: Map<String, PersonEntity>,
         expenses: List<ExpenseEntity> = emptyList(),
-        expenseTypesMap: Map<String, ExpenseTypeEntity> = emptyMap()
+        expenseTypesMap: Map<String, ExpenseTypeEntity> = emptyMap(),
+        salaryRates: List<SalaryRateEntity> = emptyList()
     ): List<DisplayLedgerRow> {
         val rows = mutableListOf<DisplayLedgerRow>()
 
         if (accountType == "person") {
+            val manualDatesForPerson = attendances.filter { att ->
+                !att.deleted && !att.note.contains("خودکار") && !att.note.contains("اتوماتیک") && !att.createdBy.startsWith("auto") &&
+                try {
+                    val arr = org.json.JSONArray(att.lines)
+                    (0 until arr.length()).any { arr.getJSONObject(it).optString("personId") == accountId }
+                } catch (_: Exception) { false }
+            }.map { it.date }.toSet()
+
             // 1. Attendances for this person
             for (att in attendances) {
+                val isAuto = att.note.contains("خودکار") || att.note.contains("اتوماتیک") || att.createdBy.startsWith("auto")
+                if (isAuto && manualDatesForPerson.contains(att.date)) {
+                    continue // Manual attendance replaces automatic attendance on the same date
+                }
+
                 val crew = crewsMap[att.crewId] ?: continue
                 val tag = tagsMap[att.tagId]
                 val tagName = tag?.name ?: "فعالیت"
-                val calc = calculateAttendanceWage(att, crew, wageRates, personsMap)
+                val calc = calculateAttendanceWage(att, crew, wageRates, personsMap, salaryRates)
 
                 // Member participation
                 val memberLine = calc.memberLines.find { it.personId == accountId }
@@ -666,11 +688,12 @@ object WorkforceCalculator {
         tagsMap: Map<String, TagEntity>,
         personsMap: Map<String, PersonEntity>,
         expenses: List<ExpenseEntity> = emptyList(),
-        expenseTypesMap: Map<String, ExpenseTypeEntity> = emptyMap()
+        expenseTypesMap: Map<String, ExpenseTypeEntity> = emptyMap(),
+        salaryRates: List<SalaryRateEntity> = emptyList()
     ): Long {
         val ledger = buildAccountLedger(
             accountType, accountId, attendances, pieceWorks, payments, ledgerEntries,
-            wageRates, crewsMap, tagsMap, personsMap, expenses, expenseTypesMap
+            wageRates, crewsMap, tagsMap, personsMap, expenses, expenseTypesMap, salaryRates
         )
         return ledger.lastOrNull()?.runningBalance ?: 0L
     }

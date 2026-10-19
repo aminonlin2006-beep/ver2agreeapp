@@ -53,6 +53,7 @@ fun TaskFormDialog(
         title: String,
         farmId: String?,
         plotId: String?,
+        plotIds: List<String>,
         startDate: String,
         endDate: String,
         priority: String,
@@ -71,7 +72,21 @@ fun TaskFormDialog(
 
     var selectedFarmId by remember { mutableStateOf(initialTask?.farmId) }
     var selectablePlotsList by remember { mutableStateOf<List<PlotEntity>>(emptyList()) }
-    var selectedPlotId by remember { mutableStateOf(initialTask?.plotId) }
+    
+    val initialPlotIds = remember(initialTask) {
+        if (initialTask != null) {
+            val list = mutableListOf<String>()
+            try {
+                val arr = org.json.JSONArray(initialTask.plotIds)
+                for (i in 0 until arr.length()) list.add(arr.getString(i))
+            } catch (_: Exception) {}
+            if (list.isEmpty() && initialTask.plotId != null) {
+                list.add(initialTask.plotId)
+            }
+            list.toSet()
+        } else emptySet()
+    }
+    var selectedPlotIds by remember { mutableStateOf(initialPlotIds) }
 
     // Parse assignees
     val initialAssignees = remember(initialTask) {
@@ -97,12 +112,10 @@ fun TaskFormDialog(
             val plots = getPlotsForFarm(selectedFarmId!!)
             val realPlots = plots.filter { !it.isDefault && it.active }
             selectablePlotsList = realPlots
-            if (realPlots.none { it.id == selectedPlotId }) {
-                selectedPlotId = if (realPlots.isNotEmpty()) realPlots.first().id else null
-            }
+            selectedPlotIds = selectedPlotIds.filter { pid -> realPlots.any { it.id == pid } }.toSet()
         } else {
             selectablePlotsList = emptyList()
-            selectedPlotId = null
+            selectedPlotIds = emptySet()
         }
     }
 
@@ -266,14 +279,24 @@ fun TaskFormDialog(
                             }
                         }
 
-                        // Plot picker (only if farm has real active plots)
+                        // Multi-Plot picker (only if farm has real active plots)
                         if (selectedFarmId != null && selectablePlotsList.isNotEmpty()) {
-                            Text("انتخاب قطعه:", style = MaterialTheme.typography.labelSmall)
+                            Text("انتخاب قطعه‌ها (امکان انتخاب چند قطعه):", style = MaterialTheme.typography.labelSmall)
                             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 items(selectablePlotsList) { plot ->
+                                    val isSelected = selectedPlotIds.contains(plot.id)
                                     FilterChip(
-                                        selected = selectedPlotId == plot.id,
-                                        onClick = { selectedPlotId = if (selectedPlotId == plot.id) null else plot.id },
+                                        selected = isSelected,
+                                        onClick = {
+                                            selectedPlotIds = if (isSelected) {
+                                                selectedPlotIds - plot.id
+                                            } else {
+                                                selectedPlotIds + plot.id
+                                            }
+                                        },
+                                        leadingIcon = if (isSelected) {
+                                            { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                                        } else null,
                                         label = { Text(plot.name) }
                                     )
                                 }
@@ -356,15 +379,16 @@ fun TaskFormDialog(
                 onClick = {
                     val finalEndDate = if (isMultiDay && endDate >= startDate) endDate else startDate
                     onSave(
-                        title,
+                        title.trim(),
                         selectedFarmId,
-                        selectedPlotId,
+                        selectedPlotIds.firstOrNull(),
+                        selectedPlotIds.toList(),
                         startDate,
                         finalEndDate,
                         priority,
                         selectedAssignees.toList(),
                         selectedTagId,
-                        note
+                        note.trim()
                     )
                 },
                 enabled = title.isNotBlank(),

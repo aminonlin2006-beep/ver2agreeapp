@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,13 +44,14 @@ fun WorkforceScreen(
     uiState: MainUiState,
     viewModel: MainViewModel,
     onNavigateBack: () -> Unit,
-    onNavigateToCrewDetail: (String) -> Unit
+    onNavigateToCrewDetail: (String) -> Unit,
+    onNavigateToReports: () -> Unit = {}
 ) {
     BackHandler { onNavigateBack() }
     val context = LocalContext.current
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
-    val tabs = listOf("دسته‌ها", "حضور و غیاب", "کار پیمانی", "شمارش من")
+    val tabs = listOf("حضور و غیاب", "کار پیمانی", "شمارش من", "دسته‌ها")
 
     val personsMap = remember(uiState.persons) { uiState.persons.associateBy { it.id } }
     val crewsMap = remember(uiState.crews) { uiState.crews.associateBy { it.id } }
@@ -65,6 +67,11 @@ fun WorkforceScreen(
 
     var showAttendanceDialog by remember { mutableStateOf(false) }
     var attendanceToEdit by remember { mutableStateOf<AttendanceEntity?>(null) }
+    var attendanceDateIso by remember { mutableStateOf(todayIso) }
+    var showAttendanceDatePicker by remember { mutableStateOf(false) }
+    var workerSearchQuery by remember { mutableStateOf("") }
+    var workerStatusFilter by remember { mutableIntStateOf(0) }
+    var selectedCrewFilterId by remember { mutableStateOf<String?>(null) }
 
     var showPieceWorkDialog by remember { mutableStateOf(false) }
     var pieceWorkToEdit by remember { mutableStateOf<PieceWorkEntity?>(null) }
@@ -75,10 +82,15 @@ fun WorkforceScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("نیروی کار و روزمزد", fontWeight = FontWeight.Bold) },
+                title = { Text("حضور و غیاب و نیروی کار", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack, modifier = Modifier.testTag("workforce_back_btn")) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = onNavigateToReports, modifier = Modifier.testTag("workforce_reports_btn")) {
+                        Icon(Icons.Default.Assessment, contentDescription = "گزارش‌ها", tint = MaterialTheme.colorScheme.primary)
                     }
                 }
             )
@@ -87,24 +99,16 @@ fun WorkforceScreen(
             when (selectedTabIndex) {
                 0 -> {
                     ExtendedFloatingActionButton(
-                        onClick = { showCreateCrewDialog = true },
-                        icon = { Icon(Icons.Default.GroupAdd, contentDescription = null) },
-                        text = { Text("دسته‌ی جدید") },
-                        modifier = Modifier.testTag("workforce_add_crew_fab")
-                    )
-                }
-                1 -> {
-                    ExtendedFloatingActionButton(
                         onClick = {
                             attendanceToEdit = null
                             showAttendanceDialog = true
                         },
                         icon = { Icon(Icons.Default.FactCheck, contentDescription = null) },
-                        text = { Text("ثبت حضور و غیاب") },
+                        text = { Text("ثبت حضور تفصیلی") },
                         modifier = Modifier.testTag("workforce_add_attendance_fab")
                     )
                 }
-                2 -> {
+                1 -> {
                     ExtendedFloatingActionButton(
                         onClick = {
                             pieceWorkToEdit = null
@@ -115,12 +119,20 @@ fun WorkforceScreen(
                         modifier = Modifier.testTag("workforce_add_piecework_fab")
                     )
                 }
-                3 -> {
+                2 -> {
                     ExtendedFloatingActionButton(
                         onClick = { showMyCountDialog = true },
                         icon = { Icon(Icons.Default.Pin, contentDescription = null) },
                         text = { Text("شمارش جدید") },
                         modifier = Modifier.testTag("workforce_add_mycount_fab")
+                    )
+                }
+                3 -> {
+                    ExtendedFloatingActionButton(
+                        onClick = { showCreateCrewDialog = true },
+                        icon = { Icon(Icons.Default.GroupAdd, contentDescription = null) },
+                        text = { Text("دسته تازه") },
+                        modifier = Modifier.testTag("workforce_add_crew_fab")
                     )
                 }
             }
@@ -148,106 +160,223 @@ fun WorkforceScreen(
 
             when (selectedTabIndex) {
                 0 -> {
-                    // --- CREWS TAB ---
+                    // --- TAB 0: ATTENDANCE TAB (With Integrated Crew/Foreman Selection & Bulk Presence) ---
+                    val presentPersonIdsForDate = remember(attendanceDateIso, uiState.attendances) {
+                        val set = mutableSetOf<String>()
+                        val dateAtts = uiState.attendances.filter { it.date == attendanceDateIso && !it.deleted }
+                        for (att in dateAtts) {
+                            try {
+                                val arr = org.json.JSONArray(att.lines)
+                                for (i in 0 until arr.length()) {
+                                    val pId = arr.getJSONObject(i).optString("personId", "")
+                                    val ticks = arr.getJSONObject(i).optInt("ticks", 1)
+                                    if (pId.isNotBlank() && ticks > 0) {
+                                        set.add(pId)
+                                    }
+                                }
+                            } catch (_: Exception) {}
+                        }
+                        set
+                    }
+
+                    val allActiveWorkers = remember(uiState.persons) {
+                        uiState.persons.filter { it.active && !it.deleted }
+                    }
+
+                    val crewFilteredWorkers = remember(allActiveWorkers, selectedCrewFilterId, uiState.crewMembers, uiState.crews) {
+                        if (selectedCrewFilterId == null) {
+                            allActiveWorkers
+                        } else {
+                            val crew = uiState.crews.find { it.id == selectedCrewFilterId }
+                            val memberPersonIds = uiState.crewMembers
+                                .filter { it.crewId == selectedCrewFilterId && it.active && !it.deleted }
+                                .map { it.personId }
+                                .toMutableSet()
+                            crew?.foremanId?.let { if (it.isNotBlank()) memberPersonIds.add(it) }
+                            allActiveWorkers.filter { memberPersonIds.contains(it.id) }
+                        }
+                    }
+
+                    val filteredWorkers = remember(crewFilteredWorkers, workerSearchQuery, workerStatusFilter, presentPersonIdsForDate) {
+                        crewFilteredWorkers.filter { p ->
+                            val matchesSearch = workerSearchQuery.isBlank() || p.name.contains(workerSearchQuery, ignoreCase = true)
+                            val isPresent = presentPersonIdsForDate.contains(p.id)
+                            val matchesStatus = when (workerStatusFilter) {
+                                1 -> isPresent
+                                2 -> !isPresent
+                                else -> true
+                            }
+                            matchesSearch && matchesStatus
+                        }
+                    }
+
+                    val presentCount = crewFilteredWorkers.count { presentPersonIdsForDate.contains(it.id) }
+                    val absentCount = crewFilteredWorkers.size - presentCount
+
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
                         contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp)
                     ) {
-                        if (uiState.crews.isEmpty()) {
-                            item {
-                                Card(
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth().padding(32.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        // 1. Date Header & Summary Card
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
                                     ) {
-                                        Icon(Icons.Default.Groups, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outline)
-                                        Text("هنوز هیچ دسته‌ای ثبت نشده است.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.outline)
-                                        Button(onClick = { showCreateCrewDialog = true }) {
-                                            Text("ایجاد اولین دسته")
+                                        Column {
+                                            Text(
+                                                text = "تاریخ حضور و غیاب",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.outline
+                                            )
+                                            Text(
+                                                text = JalaliDateHelper.fromIsoDate(attendanceDateIso).toDisplayFull(),
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                        OutlinedButton(
+                                            onClick = { showAttendanceDatePicker = true },
+                                            modifier = Modifier.testTag("change_attendance_date_btn")
+                                        ) {
+                                            Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("تغییر تاریخ")
+                                        }
+                                    }
+
+                                    Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                                    Row(
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            text = "آمار این روز:",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            SuggestionChip(
+                                                onClick = {},
+                                                label = { Text("حاضر: ${NumberFormatHelper.toPersianDigits(presentCount)} نفر", color = ColorSuccessGreen, fontWeight = FontWeight.Bold) }
+                                            )
+                                            SuggestionChip(
+                                                onClick = {},
+                                                label = { Text("غایب: ${NumberFormatHelper.toPersianDigits(absentCount)} نفر", color = MaterialTheme.colorScheme.outline) }
+                                            )
                                         }
                                     }
                                 }
                             }
-                        } else {
-                            items(uiState.crews) { crew ->
-                                val membersCount = uiState.crewMembers.count { it.crewId == crew.id && !it.deleted }
-                                val baseWage = WorkforceCalculator.getEffectiveDailyWage(uiState.wageRates, crew.id, null, todayIso)
-                                val foreman = crew.foremanId?.let { personsMap[it] }
+                        }
 
-                                Card(
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable { onNavigateToCrewDetail(crew.id) }
-                                        .testTag("crew_card_${crew.id}")
-                                ) {
-                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Box(
-                                                    modifier = Modifier
-                                                        .size(10.dp)
-                                                        .clip(CircleShape)
-                                                        .background(if (crew.active) ColorSuccessGreen else ColorNeutralGray)
-                                                )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(crew.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-                                            }
-
-                                            SuggestionChip(
-                                                onClick = { onNavigateToCrewDetail(crew.id) },
-                                                label = {
-                                                    Text(
-                                                        if (crew.kind == "count") "عددی" else "${NumberFormatHelper.toPersianDigits(membersCount)} عضو",
-                                                        style = MaterialTheme.typography.labelSmall
-                                                    )
-                                                }
+                        // 2. Crew / Foreman Selection Card (بخش انتخاب دسته و سرکارگر)
+                        item {
+                            Card(
+                                shape = RoundedCornerShape(16.dp),
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Icon(Icons.Default.Groups, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                            Text(
+                                                text = "انتخاب دسته / سرکارگر:",
+                                                style = MaterialTheme.typography.titleSmall,
+                                                fontWeight = FontWeight.Bold
                                             )
                                         }
+                                        TextButton(onClick = { selectedTabIndex = 3 }) {
+                                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text("مدیریت دسته‌ها", style = MaterialTheme.typography.labelSmall)
+                                        }
+                                    }
 
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            Column {
-                                                Text(
-                                                    "سرکارگر: ${foreman?.name ?: "ندارد"}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.outline
-                                                )
-                                                Text(
-                                                    "روزمزد پایه: ${NumberFormatHelper.formatTomanFull(baseWage)}",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    fontWeight = FontWeight.Bold,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                            }
+                                    // FilterChips for Crews
+                                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                        item {
+                                            FilterChip(
+                                                selected = selectedCrewFilterId == null,
+                                                onClick = { selectedCrewFilterId = null },
+                                                label = { Text("همه کارگران (${NumberFormatHelper.toPersianDigits(allActiveWorkers.size)})") },
+                                                modifier = Modifier.testTag("filter_all_crews_chip")
+                                            )
+                                        }
+                                        items(uiState.crews.filter { !it.deleted }) { crew ->
+                                            val foreman = crew.foremanId?.let { personsMap[it] }
+                                            val labelText = if (foreman != null) "${crew.name} (${foreman.name})" else crew.name
+                                            FilterChip(
+                                                selected = selectedCrewFilterId == crew.id,
+                                                onClick = {
+                                                    selectedCrewFilterId = if (selectedCrewFilterId == crew.id) null else crew.id
+                                                },
+                                                label = { Text(labelText) },
+                                                modifier = Modifier.testTag("filter_crew_${crew.id}_chip")
+                                            )
+                                        }
+                                    }
 
-                                            Row {
-                                                IconButton(
-                                                    onClick = { crewToEdit = crew },
-                                                    modifier = Modifier.testTag("edit_crew_btn_${crew.id}")
-                                                ) {
-                                                    Icon(Icons.Default.Edit, contentDescription = "ویرایش", tint = MaterialTheme.colorScheme.outline)
-                                                }
-                                                IconButton(
-                                                    onClick = { crewToDelete = crew },
-                                                    modifier = Modifier.testTag("delete_crew_btn_${crew.id}")
-                                                ) {
-                                                    Icon(Icons.Default.Delete, contentDescription = "حذف", tint = ColorDangerRed)
+                                    // Bulk action for selected crew
+                                    if (selectedCrewFilterId != null) {
+                                        val selectedCrew = uiState.crews.find { it.id == selectedCrewFilterId }
+                                        if (selectedCrew != null) {
+                                            val foreman = selectedCrew.foremanId?.let { personsMap[it] }
+                                            Surface(
+                                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                                                shape = RoundedCornerShape(12.dp)
+                                            ) {
+                                                Column(modifier = Modifier.padding(12.dp).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                                    Text(
+                                                        text = "دسته انتخاب‌شده: ${selectedCrew.name}${if (foreman != null) " • سرکارگر: ${foreman.name}" else ""}",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                    )
+                                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                                        Button(
+                                                            onClick = {
+                                                                viewModel.toggleCrewAttendance(attendanceDateIso, selectedCrew.id, true) {
+                                                                    Toast.makeText(context, "حضور تمام اعضای دسته ثبت شد", Toast.LENGTH_SHORT).show()
+                                                                }
+                                                            },
+                                                            colors = ButtonDefaults.buttonColors(containerColor = ColorSuccessGreen),
+                                                            modifier = Modifier.weight(1f).testTag("mark_crew_all_present_btn")
+                                                        ) {
+                                                            Icon(Icons.Default.DoneAll, contentDescription = null, modifier = Modifier.size(18.dp))
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Text("حضور همه اعضا", style = MaterialTheme.typography.labelMedium)
+                                                        }
+
+                                                        OutlinedButton(
+                                                            onClick = {
+                                                                viewModel.toggleCrewAttendance(attendanceDateIso, selectedCrew.id, false) {
+                                                                    Toast.makeText(context, "غیبت تمام اعضای دسته ثبت شد", Toast.LENGTH_SHORT).show()
+                                                                }
+                                                            },
+                                                            modifier = Modifier.weight(1f).testTag("mark_crew_all_absent_btn")
+                                                        ) {
+                                                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp), tint = ColorDangerRed)
+                                                            Spacer(modifier = Modifier.width(6.dp))
+                                                            Text("غیبت همه اعضا", style = MaterialTheme.typography.labelMedium, color = ColorDangerRed)
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -255,38 +384,186 @@ fun WorkforceScreen(
                                 }
                             }
                         }
-                    }
-                }
 
-                1 -> {
-                    // --- ATTENDANCE TAB ---
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp)
-                    ) {
-                        if (uiState.attendances.isEmpty()) {
+                        // 3. Search & Status Filter Bar
+                        item {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedTextField(
+                                    value = workerSearchQuery,
+                                    onValueChange = { workerSearchQuery = it },
+                                    placeholder = { Text("جستجوی نام کارگر...") },
+                                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                                    trailingIcon = if (workerSearchQuery.isNotEmpty()) {
+                                        { IconButton(onClick = { workerSearchQuery = "" }) { Icon(Icons.Default.Clear, contentDescription = "پاک کردن") } }
+                                    } else null,
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp),
+                                    modifier = Modifier.fillMaxWidth().testTag("worker_search_input")
+                                )
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                    FilterChip(
+                                        selected = workerStatusFilter == 0,
+                                        onClick = { workerStatusFilter = 0 },
+                                        label = { Text("همه (${NumberFormatHelper.toPersianDigits(crewFilteredWorkers.size)})") },
+                                        modifier = Modifier.testTag("filter_all_workers_chip")
+                                    )
+                                    FilterChip(
+                                        selected = workerStatusFilter == 1,
+                                        onClick = { workerStatusFilter = 1 },
+                                        label = { Text("حاضرین (${NumberFormatHelper.toPersianDigits(presentCount)})") },
+                                        modifier = Modifier.testTag("filter_present_workers_chip")
+                                    )
+                                    FilterChip(
+                                        selected = workerStatusFilter == 2,
+                                        onClick = { workerStatusFilter = 2 },
+                                        label = { Text("غایبین (${NumberFormatHelper.toPersianDigits(absentCount)})") },
+                                        modifier = Modifier.testTag("filter_absent_workers_chip")
+                                    )
+                                }
+                            }
+                        }
+
+                        // 4. Section Title
+                        item {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                            ) {
+                                Text(
+                                    text = if (selectedCrewFilterId != null) "کارگران دسته‌ی انتخاب‌شده" else "لیست کارگران (ثبت تیک حضور/غیاب)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = "${NumberFormatHelper.toPersianDigits(filteredWorkers.size)} کارگر",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                            }
+                        }
+
+                        // 5. Worker List Items with Toggle Checkbox/Switch
+                        if (filteredWorkers.isEmpty()) {
                             item {
+                                Text(
+                                    text = "هیچ کارگری با این مشخصات یا فیلتر یافت نشد.",
+                                    color = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.padding(vertical = 16.dp)
+                                )
+                            }
+                        } else {
+                            items(filteredWorkers, key = { it.id }) { person ->
+                                val isPresent = presentPersonIdsForDate.contains(person.id)
+                                val personCrews = uiState.crewMembers.filter { it.personId == person.id && it.active && !it.deleted }
+                                val crewNames = personCrews.mapNotNull { cm -> crewsMap[cm.crewId]?.name }.joinToString(" • ")
+
+                                val personSalRate = uiState.salaryRates.find { it.personId == person.id && !it.deleted }?.monthlySalary ?: 0L
+                                val salarySubtitle = if (personSalRate > 0L) {
+                                    "حقوق ماهانه: ${NumberFormatHelper.formatTomanShort(personSalRate)}"
+                                } else {
+                                    val dailyWage = WorkforceCalculator.getEffectiveDailyWage(
+                                        wageRates = uiState.wageRates,
+                                        crewId = personCrews.firstOrNull()?.crewId ?: "",
+                                        personId = person.id,
+                                        date = attendanceDateIso,
+                                        salaryRates = uiState.salaryRates
+                                    )
+                                    if (dailyWage > 0L) "روزمزد: ${NumberFormatHelper.formatTomanShort(dailyWage)}" else null
+                                }
+
                                 Card(
-                                    shape = RoundedCornerShape(16.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth().padding(32.dp),
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                                    ) {
-                                        Icon(Icons.Default.FactCheck, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outline)
-                                        Text("هنوز حضور و غیابی ثبت نشده است.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.outline)
-                                        Button(onClick = {
-                                            attendanceToEdit = null
-                                            showAttendanceDialog = true
-                                        }) {
-                                            Text("ثبت اولین حضور و غیاب")
+                                    shape = RoundedCornerShape(12.dp),
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (isPresent) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surface
+                                    ),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = if (isPresent) 2.dp else 1.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            viewModel.toggleWorkerAttendance(attendanceDateIso, person.id, !isPresent)
                                         }
+                                        .testTag("worker_attendance_item_${person.id}")
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp).fillMaxWidth()
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                            Checkbox(
+                                                checked = isPresent,
+                                                onCheckedChange = { checked ->
+                                                    viewModel.toggleWorkerAttendance(attendanceDateIso, person.id, checked)
+                                                },
+                                                modifier = Modifier.testTag("worker_check_${person.id}")
+                                            )
+                                            Column {
+                                                Text(person.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyLarge)
+                                                val details = listOfNotNull(
+                                                    crewNames.ifBlank { null },
+                                                    salarySubtitle
+                                                ).joinToString(" | ")
+                                                if (details.isNotBlank()) {
+                                                    Text(details, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                                }
+                                            }
+                                        }
+
+                                        FilterChip(
+                                            selected = isPresent,
+                                            onClick = {
+                                                viewModel.toggleWorkerAttendance(attendanceDateIso, person.id, !isPresent)
+                                            },
+                                            label = {
+                                                Text(
+                                                    text = if (isPresent) "حاضر ✓" else "غایب ✕",
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            },
+                                            colors = FilterChipDefaults.filterChipColors(
+                                                selectedContainerColor = ColorSuccessGreen.copy(alpha = 0.2f),
+                                                selectedLabelColor = ColorSuccessGreen,
+                                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                                labelColor = MaterialTheme.colorScheme.outline
+                                            )
+                                        )
                                     }
                                 }
+                            }
+                        }
+
+                        // 6. Section for Detailed Attendance Records & History
+                        item {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Divider()
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "ثبت‌های تفصیلی و تاریخچه حضور",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                TextButton(onClick = {
+                                    attendanceToEdit = null
+                                    showAttendanceDialog = true
+                                }) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("ثبت تفصیلی")
+                                }
+                            }
+                        }
+
+                        if (uiState.attendances.isEmpty()) {
+                            item {
+                                Text("هنوز ثبت گروهی ثبت نشده است.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
                             }
                         } else {
                             val sortedAtt = uiState.attendances.sortedByDescending { it.date }
@@ -298,10 +575,9 @@ fun WorkforceScreen(
                                 val jDate = JalaliDateHelper.isoToJalali(att.date)
 
                                 val calc = if (crew != null) {
-                                    WorkforceCalculator.calculateAttendanceWage(att, crew, uiState.wageRates, personsMap)
+                                    WorkforceCalculator.calculateAttendanceWage(att, crew, uiState.wageRates, personsMap, uiState.salaryRates)
                                 } else null
 
-                                // Check if user has a myCount on this date for this crew
                                 val matchingMyCount = uiState.myCounts.find { it.date == att.date && it.crewId == att.crewId && !it.deleted }
 
                                 Card(
@@ -372,8 +648,8 @@ fun WorkforceScreen(
                     }
                 }
 
-                2 -> {
-                    // --- PIECEWORK TAB ---
+                1 -> {
+                    // --- TAB 1: PIECEWORK TAB ---
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -487,8 +763,8 @@ fun WorkforceScreen(
                     }
                 }
 
-                3 -> {
-                    // --- MY COUNTS TAB ---
+                2 -> {
+                    // --- TAB 2: MY COUNTS TAB ---
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -557,6 +833,117 @@ fun WorkforceScreen(
                                             )
                                             IconButton(onClick = { viewModel.deleteMyCount(mc.id) }) {
                                                 Icon(Icons.Default.Delete, contentDescription = "حذف", tint = ColorDangerRed)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                3 -> {
+                    // --- TAB 3: CREWS TAB (MANAGE CREWS) ---
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp)
+                    ) {
+                        if (uiState.crews.isEmpty()) {
+                            item {
+                                Card(
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(32.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                                    ) {
+                                        Icon(Icons.Default.Groups, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.outline)
+                                        Text("هنوز هیچ دسته‌ای ثبت نشده است.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.outline)
+                                        Button(onClick = { showCreateCrewDialog = true }) {
+                                            Text("ایجاد اولین دسته")
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            items(uiState.crews) { crew ->
+                                val membersCount = uiState.crewMembers.count { it.crewId == crew.id && !it.deleted }
+                                val baseWage = WorkforceCalculator.getEffectiveDailyWage(uiState.wageRates, crew.id, null, todayIso, uiState.salaryRates)
+                                val foreman = crew.foremanId?.let { personsMap[it] }
+
+                                Card(
+                                    shape = RoundedCornerShape(16.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onNavigateToCrewDetail(crew.id) }
+                                        .testTag("crew_card_${crew.id}")
+                                ) {
+                                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(10.dp)
+                                                        .clip(CircleShape)
+                                                        .background(if (crew.active) ColorSuccessGreen else ColorNeutralGray)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(crew.name, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+                                            }
+
+                                            SuggestionChip(
+                                                onClick = { onNavigateToCrewDetail(crew.id) },
+                                                label = {
+                                                    Text(
+                                                        if (crew.kind == "count") "عددی" else "${NumberFormatHelper.toPersianDigits(membersCount)} عضو",
+                                                        style = MaterialTheme.typography.labelSmall
+                                                    )
+                                                }
+                                            )
+                                        }
+
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Column {
+                                                Text(
+                                                    "سرکارگر: ${foreman?.name ?: "ندارد"}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.outline
+                                                )
+                                                Text(
+                                                    "روزمزد پایه: ${NumberFormatHelper.formatTomanFull(baseWage)}",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+
+                                            Row {
+                                                IconButton(
+                                                    onClick = { crewToEdit = crew },
+                                                    modifier = Modifier.testTag("edit_crew_btn_${crew.id}")
+                                                ) {
+                                                    Icon(Icons.Default.Edit, contentDescription = "ویرایش", tint = MaterialTheme.colorScheme.outline)
+                                                }
+                                                IconButton(
+                                                    onClick = { crewToDelete = crew },
+                                                    modifier = Modifier.testTag("delete_crew_btn_${crew.id}")
+                                                ) {
+                                                    Icon(Icons.Default.Delete, contentDescription = "حذف", tint = ColorDangerRed)
+                                                }
                                             }
                                         }
                                     }
@@ -749,6 +1136,18 @@ fun WorkforceScreen(
         AttendanceComparisonDialog(
             uiState = uiState,
             onDismiss = { showComparisonDialog = false }
+        )
+    }
+
+    // --- ATTENDANCE DATE PICKER DIALOG ---
+    if (showAttendanceDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = attendanceDateIso,
+            onDismiss = { showAttendanceDatePicker = false },
+            onDateSelected = { iso ->
+                attendanceDateIso = iso
+                showAttendanceDatePicker = false
+            }
         )
     }
 }

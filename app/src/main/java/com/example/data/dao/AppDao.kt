@@ -24,6 +24,7 @@ import com.example.data.entity.RoleEntity
 import com.example.data.entity.SalaryPostingEntity
 import com.example.data.entity.ProductEntity
 import com.example.data.entity.CropEntity
+import com.example.data.entity.IrrigationScheduleEntity
 import com.example.data.entity.SalaryRateEntity
 import com.example.data.entity.SettingEntity
 import com.example.data.entity.SnapshotEntity
@@ -584,4 +585,29 @@ interface AppDao {
 
     @Update
     suspend fun updateCrop(crop: CropEntity)
+
+    // --- IRRIGATION SCHEDULES ---
+    @Query("SELECT * FROM irrigation_schedules WHERE deleted = 0 ORDER BY date ASC, time ASC")
+    fun getAllIrrigationSchedules(): Flow<List<IrrigationScheduleEntity>>
+
+    @Query("SELECT * FROM irrigation_schedules WHERE deleted = 0 ORDER BY date ASC, time ASC")
+    suspend fun getAllIrrigationSchedulesList(): List<IrrigationScheduleEntity>
+
+    @Query("SELECT * FROM irrigation_schedules WHERE id = :id AND deleted = 0 LIMIT 1")
+    suspend fun getIrrigationScheduleById(id: String): IrrigationScheduleEntity?
+
+    @Query("SELECT * FROM irrigation_schedules WHERE plotId = :plotId AND deleted = 0 ORDER BY date ASC, time ASC")
+    suspend fun getIrrigationSchedulesByPlotId(plotId: String): List<IrrigationScheduleEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertIrrigationSchedule(schedule: IrrigationScheduleEntity)
+
+    @Update
+    suspend fun updateIrrigationSchedule(schedule: IrrigationScheduleEntity)
+
+    @Query("DELETE FROM irrigation_schedules")
+    suspend fun clearIrrigationSchedules()
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertIrrigationSchedules(schedules: List<IrrigationScheduleEntity>)
 }

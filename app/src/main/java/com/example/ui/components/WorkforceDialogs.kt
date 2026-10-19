@@ -343,6 +343,7 @@ fun WageChangeDialog(
 ) {
     val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
     var effectiveFrom by remember { mutableStateOf(todayIso) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
     val currentWage = remember(crewId, personId, uiState.wageRates) {
         WorkforceCalculator.getEffectiveDailyWage(uiState.wageRates, crewId, personId, todayIso)
@@ -375,13 +376,39 @@ fun WageChangeDialog(
                     modifier = Modifier.fillMaxWidth().testTag("new_wage_amount_input")
                 )
 
-                OutlinedTextField(
-                    value = JalaliDateHelper.fromIsoDate(effectiveFrom).toDisplayFull(),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("از تاریخ") },
-                    modifier = Modifier.fillMaxWidth().testTag("new_wage_date_input")
-                )
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showDatePicker = true }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .padding(14.dp)
+                            .fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                text = "اعمال از تاریخ:",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Text(
+                                text = JalaliDateHelper.fromIsoDate(effectiveFrom).toDisplayFull(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Icon(
+                            imageVector = Icons.Default.CalendarMonth,
+                            contentDescription = "انتخاب تاریخ",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
 
                 if (historyRates.isNotEmpty()) {
                     Divider(modifier = Modifier.padding(vertical = 4.dp))
@@ -417,6 +444,17 @@ fun WageChangeDialog(
             }
         }
     )
+
+    if (showDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = effectiveFrom,
+            onDismiss = { showDatePicker = false },
+            onDateSelected = { newDate ->
+                effectiveFrom = newDate
+                showDatePicker = false
+            }
+        )
+    }
 }
 
 // -------------------------------------------------------------
@@ -438,6 +476,8 @@ fun AttendanceDialog(
 ) {
     val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
     var date by remember { mutableStateOf(initialAttendance?.date ?: prefilledDate ?: todayIso) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    var viewAllWorkersMode by remember { mutableStateOf(false) }
 
     val activeCrews = remember(uiState.crews) { uiState.crews.filter { it.active } }
     var selectedCrewId by remember {
@@ -624,15 +664,33 @@ fun AttendanceDialog(
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                     contentPadding = PaddingValues(vertical = 12.dp)
                 ) {
-                    // 1. Date
+                    // 1. Date (with JalaliDatePicker)
                     item {
-                        OutlinedTextField(
-                            value = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("تاریخ") },
-                            modifier = Modifier.fillMaxWidth().testTag("attendance_date_input")
-                        )
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showDatePicker = true }
+                                .testTag("attendance_date_input")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column {
+                                    Text("تاریخ حضور و غیاب:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Icon(Icons.Default.CalendarMonth, contentDescription = "انتخاب تاریخ", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
                     }
 
                     // 2. Crew Selector
@@ -640,10 +698,16 @@ fun AttendanceDialog(
                         Text("دسته:", style = MaterialTheme.typography.labelMedium)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             activeCrews.forEach { c ->
+                                val displayName = remember(c, personsMap) {
+                                    if (c.foremanId != null) {
+                                        val fName = personsMap[c.foremanId]?.name
+                                        if (!fName.isNullOrBlank() && !c.name.startsWith("دسته‌ی")) "دسته‌ی $fName" else c.name
+                                    } else c.name
+                                }
                                 FilterChip(
                                     selected = c.id == selectedCrewId,
                                     onClick = { selectedCrewId = c.id },
-                                    label = { Text(c.name) },
+                                    label = { Text(displayName) },
                                     modifier = Modifier.testTag("attendance_crew_chip_${c.id}")
                                 )
                             }
@@ -750,17 +814,48 @@ fun AttendanceDialog(
                     // 5. Members List or Headcount
                     if (selectedCrew?.kind == "members") {
                         item {
-                            Text("اعضای حاضر در امروز:", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("ثبت حضور افراد:", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        FilterChip(
+                                            selected = !viewAllWorkersMode,
+                                            onClick = { viewAllWorkersMode = false },
+                                            label = { Text("اعضای دسته (${NumberFormatHelper.toPersianDigits(crewMembers.size)})") }
+                                        )
+                                        FilterChip(
+                                            selected = viewAllWorkersMode,
+                                            onClick = { viewAllWorkersMode = true },
+                                            label = { Text("کل کارگران (${NumberFormatHelper.toPersianDigits(uiState.persons.count { it.active })})") }
+                                        )
+                                    }
+                                }
+                            }
                         }
 
-                        if (crewMembers.isEmpty()) {
-                            item {
-                                Text("هیچ عضوی در این دسته ثبت نشده است. ابتدا عضو اضافه کنید.", color = ColorDangerRed)
+                        val displayedList = if (viewAllWorkersMode) {
+                            uiState.persons.filter { it.active }.map { p ->
+                                val m = crewMembers.find { it.personId == p.id }
+                                Triple(p.id, p.name, m?.id)
                             }
                         } else {
-                            items(crewMembers) { member ->
-                                val person = personsMap[member.personId]
-                                val sel = memberSelections[member.personId] ?: Pair(false, 1)
+                            crewMembers.map { m ->
+                                val p = personsMap[m.personId]
+                                Triple(m.personId, p?.name ?: "کارگر", m.id)
+                            }
+                        }
+
+                        if (displayedList.isEmpty()) {
+                            item {
+                                Text("هیچ عضوی یافت نشد. می‌توانید از تب «کل کارگران» یا دکمه افزودن شخص استفاده کنید.", color = ColorDangerRed)
+                            }
+                        } else {
+                            items(displayedList) { (personId, personName, memberId) ->
+                                val sel = memberSelections[personId] ?: Pair(false, 1)
                                 val isChecked = sel.first
                                 val ticks = sel.second
 
@@ -780,19 +875,24 @@ fun AttendanceDialog(
                                             Checkbox(
                                                 checked = isChecked,
                                                 onCheckedChange = { checked ->
-                                                    memberSelections[member.personId] = Pair(checked, ticks)
+                                                    memberSelections[personId] = Pair(checked, ticks)
                                                 },
-                                                modifier = Modifier.testTag("attendance_member_check_${member.personId}")
+                                                modifier = Modifier.testTag("attendance_member_check_$personId")
                                             )
                                             Column {
-                                                Text(person?.name ?: "کارگر", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
-                                                TextButton(
-                                                    onClick = {
-                                                        viewModel.deactivateCrewMember(member.id)
-                                                    },
-                                                    contentPadding = PaddingValues(0.dp)
-                                                ) {
-                                                    Text("دیگر نمی‌آید", style = MaterialTheme.typography.labelSmall, color = ColorDangerRed)
+                                                Text(personName, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                                                if (isChecked) {
+                                                    Text("حاضر", style = MaterialTheme.typography.labelSmall, color = ColorSuccessGreen, fontWeight = FontWeight.Bold)
+                                                } else {
+                                                    Text("غایب", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                                }
+                                                if (memberId != null) {
+                                                    TextButton(
+                                                        onClick = { viewModel.deactivateCrewMember(memberId) },
+                                                        contentPadding = PaddingValues(0.dp)
+                                                    ) {
+                                                        Text("دیگر نمی‌آید", style = MaterialTheme.typography.labelSmall, color = ColorDangerRed)
+                                                    }
                                                 }
                                             }
                                         }
@@ -802,9 +902,9 @@ fun AttendanceDialog(
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 IconButton(
                                                     onClick = {
-                                                        if (ticks > 1) memberSelections[member.personId] = Pair(true, ticks - 1)
+                                                        if (ticks > 1) memberSelections[personId] = Pair(true, ticks - 1)
                                                     },
-                                                    modifier = Modifier.size(32.dp).testTag("att_member_minus_${member.personId}")
+                                                    modifier = Modifier.size(32.dp).testTag("att_member_minus_$personId")
                                                 ) {
                                                     Text("−", fontSize = MaterialTheme.typography.titleMedium.fontSize, fontWeight = FontWeight.Bold)
                                                 }
@@ -816,9 +916,9 @@ fun AttendanceDialog(
                                                 )
                                                 IconButton(
                                                     onClick = {
-                                                        memberSelections[member.personId] = Pair(true, ticks + 1)
+                                                        memberSelections[personId] = Pair(true, ticks + 1)
                                                     },
-                                                    modifier = Modifier.size(32.dp).testTag("att_member_plus_${member.personId}")
+                                                    modifier = Modifier.size(32.dp).testTag("att_member_plus_$personId")
                                                 ) {
                                                     Text("+", fontSize = MaterialTheme.typography.titleMedium.fontSize, fontWeight = FontWeight.Bold)
                                                 }
@@ -1063,6 +1163,17 @@ fun AttendanceDialog(
             }
         }
     }
+
+    if (showDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = date,
+            onDismiss = { showDatePicker = false },
+            onDateSelected = { newDate ->
+                date = newDate
+                showDatePicker = false
+            }
+        )
+    }
 }
 
 // -------------------------------------------------------------
@@ -1244,6 +1355,7 @@ fun PieceWorkDialog(
 ) {
     val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
     var date by remember { mutableStateOf(initialPieceWork?.date ?: todayIso) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
     // Nursery plots only (Decision 89)
     val nurseryPlots = remember(uiState.plots) {
@@ -1347,13 +1459,30 @@ fun PieceWorkDialog(
                     contentPadding = PaddingValues(vertical = 12.dp)
                 ) {
                     item {
-                        OutlinedTextField(
-                            value = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("تاریخ") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showDatePicker = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column {
+                                    Text("تاریخ کار دانه‌ای:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Icon(Icons.Default.CalendarMonth, contentDescription = "انتخاب تاریخ", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
                     }
 
                     // Farm & Plot
@@ -1607,6 +1736,17 @@ fun PieceWorkDialog(
             }
         }
     }
+
+    if (showDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = date,
+            onDismiss = { showDatePicker = false },
+            onDateSelected = { newDate ->
+                date = newDate
+                showDatePicker = false
+            }
+        )
+    }
 }
 
 // -------------------------------------------------------------
@@ -1625,6 +1765,7 @@ fun PaymentDialog(
 ) {
     val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
     var date by remember { mutableStateOf(initialPayment?.date ?: todayIso) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
     var amountInput by remember {
         mutableStateOf(initialPayment?.amount?.toString() ?: prefilledAmount?.toString() ?: "")
@@ -1750,13 +1891,31 @@ fun PaymentDialog(
                     }
 
                     item {
-                        OutlinedTextField(
-                            value = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("تاریخ پرداخت") },
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Card(
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { showDatePicker = true }
+                                .testTag("payment_date_picker")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column {
+                                    Text("تاریخ پرداخت:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Icon(Icons.Default.CalendarMonth, contentDescription = "انتخاب تاریخ", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
                     }
 
                     // Target Type: Person or Crew
@@ -1986,6 +2145,17 @@ fun PaymentDialog(
             }
         }
     }
+
+    if (showDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = date,
+            onDismiss = { showDatePicker = false },
+            onDateSelected = { newDate ->
+                date = newDate
+                showDatePicker = false
+            }
+        )
+    }
 }
 
 // -------------------------------------------------------------
@@ -2002,6 +2172,7 @@ fun LedgerEntryDialog(
 ) {
     val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
     var date by remember { mutableStateOf(todayIso) }
+    var showDatePicker by remember { mutableStateOf(false) }
     var kind by remember { mutableStateOf(initialKind) }
     var amountInput by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
@@ -2036,13 +2207,30 @@ fun LedgerEntryDialog(
                     modifier = Modifier.fillMaxWidth().testTag("manual_ledger_amount_input")
                 )
 
-                OutlinedTextField(
-                    value = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("تاریخ") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showDatePicker = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("تاریخ ردیف دفتر:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Icon(Icons.Default.CalendarMonth, contentDescription = "انتخاب تاریخ", tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
 
                 OutlinedTextField(
                     value = note,
@@ -2066,6 +2254,17 @@ fun LedgerEntryDialog(
             OutlinedButton(onClick = onDismiss) { Text("انصراف") }
         }
     )
+
+    if (showDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = date,
+            onDismiss = { showDatePicker = false },
+            onDateSelected = { newDate ->
+                date = newDate
+                showDatePicker = false
+            }
+        )
+    }
 }
 
 // -------------------------------------------------------------
@@ -2123,6 +2322,7 @@ fun WaitingListDialog(
 ) {
     val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
     var date by remember { mutableStateOf(todayIso) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
     var accountType by remember { mutableStateOf(prefilledAccountType ?: "person") }
     val activePersons = remember(uiState.persons) { uiState.persons.filter { it.active } }
@@ -2192,6 +2392,31 @@ fun WaitingListDialog(
                     }
                 }
 
+                Card(
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showDatePicker = true }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("تاریخ درخواست:", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = JalaliDateHelper.fromIsoDate(date).toDisplayFull(),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Icon(Icons.Default.CalendarMonth, contentDescription = "انتخاب تاریخ", tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+
                 OutlinedTextField(
                     value = amountInput,
                     onValueChange = { amountInput = it },
@@ -2229,6 +2454,17 @@ fun WaitingListDialog(
             OutlinedButton(onClick = onDismiss) { Text("انصراف") }
         }
     )
+
+    if (showDatePicker) {
+        JalaliDatePickerDialog(
+            initialIso = date,
+            onDismiss = { showDatePicker = false },
+            onDateSelected = { newDate ->
+                date = newDate
+                showDatePicker = false
+            }
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -2239,25 +2475,82 @@ fun AbsenceDialog(
     onDismiss: () -> Unit,
     onSave: (com.example.data.entity.AbsenceEntity) -> Unit
 ) {
-    var fromDate by remember { mutableStateOf(initialAbsence?.fromDate ?: "") }
-    var toDate by remember { mutableStateOf(initialAbsence?.toDate ?: "") }
-    var type by remember { mutableStateOf(initialAbsence?.type ?: "unknown") }
+    val todayIso = remember { JalaliDateHelper.toIsoDate(LocalDate.now()) }
+    var fromDate by remember { mutableStateOf(initialAbsence?.fromDate ?: todayIso) }
+    var toDate by remember { mutableStateOf(initialAbsence?.toDate ?: todayIso) }
+    var type by remember { mutableStateOf(initialAbsence?.type ?: "unexcused") }
     var note by remember { mutableStateOf(initialAbsence?.note ?: "") }
+    var pickingForField by remember { mutableStateOf<String?>(null) } // "from" or "to"
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("ثبت غیبت") },
+        title = { Text("ثبت غیبت کارگر", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(value = fromDate, onValueChange = { fromDate = it }, label = { Text("از تاریخ (YYYY-MM-DD)") })
-                OutlinedTextField(value = toDate, onValueChange = { toDate = it }, label = { Text("تا تاریخ (YYYY-MM-DD)") })
-                // Type selection (simplified)
-                Text("نوع غیبت: $type")
-                OutlinedTextField(value = note, onValueChange = { note = it }, label = { Text("توضیح") })
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                // From Date
+                Card(
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth().clickable { pickingForField = "from" }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("از تاریخ:", style = MaterialTheme.typography.labelSmall)
+                            Text(JalaliDateHelper.fromIsoDate(fromDate).toDisplayFull(), fontWeight = FontWeight.Bold)
+                        }
+                        Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+
+                // To Date
+                Card(
+                    shape = RoundedCornerShape(10.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                    modifier = Modifier.fillMaxWidth().clickable { pickingForField = "to" }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text("تا تاریخ:", style = MaterialTheme.typography.labelSmall)
+                            Text(JalaliDateHelper.fromIsoDate(toDate).toDisplayFull(), fontWeight = FontWeight.Bold)
+                        }
+                        Icon(Icons.Default.CalendarMonth, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+
+                // Type
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    FilterChip(
+                        selected = type == "unexcused",
+                        onClick = { type = "unexcused" },
+                        label = { Text("غیرموجه") },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        selected = type == "leave",
+                        onClick = { type = "leave" },
+                        label = { Text("مرخصی") },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                OutlinedTextField(
+                    value = note,
+                    onValueChange = { note = it },
+                    label = { Text("توضیح (اختیاری)") },
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = {
+            Button(onClick = {
                 onSave(
                     com.example.data.entity.AbsenceEntity(
                         id = initialAbsence?.id ?: java.util.UUID.randomUUID().toString(),
@@ -2265,11 +2558,29 @@ fun AbsenceDialog(
                         fromDate = fromDate,
                         toDate = toDate,
                         type = type,
-                        note = note
+                        note = note.trim()
                     )
                 )
-            }) { Text("ذخیره") }
+            }) { Text("ذخیره غیبت") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("انصراف") } }
+        dismissButton = { OutlinedButton(onClick = onDismiss) { Text("انصراف") } }
     )
+
+    if (pickingForField != null) {
+        val curIso = if (pickingForField == "from") fromDate else toDate
+        JalaliDatePickerDialog(
+            initialIso = curIso,
+            onDismiss = { pickingForField = null },
+            onDateSelected = { newDate ->
+                if (pickingForField == "from") {
+                    fromDate = newDate
+                    if (toDate < newDate) toDate = newDate
+                } else {
+                    toDate = newDate
+                    if (fromDate > newDate) fromDate = newDate
+                }
+                pickingForField = null
+            }
+        )
+    }
 }

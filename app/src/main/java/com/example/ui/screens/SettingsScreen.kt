@@ -153,6 +153,23 @@ fun SettingsScreen(
 
                         Divider(modifier = Modifier.padding(vertical = 12.dp))
 
+                        // Reports Module
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("ماژول گزارش‌های آمار و مالی", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                                Text("تحلیل کارکرد کارگران، هزینه‌ها و خروجی گزارش‌ها", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                            }
+                            Switch(
+                                checked = uiState.isReportsModuleActive,
+                                onCheckedChange = { viewModel.toggleReportsModule() },
+                                modifier = Modifier.testTag("toggle_reports_module_switch")
+                            )
+                        }
+
                         // Workforce & Ledger Module
                         Row(
                             verticalAlignment = Alignment.CenterVertically,

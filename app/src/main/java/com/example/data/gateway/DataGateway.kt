@@ -28,8 +28,11 @@ import com.example.data.entity.SalaryRateEntity
 import com.example.data.entity.WageRateEntity
 import com.example.data.entity.WaitingListEntity
 import com.example.data.entity.AbsenceEntity
+import com.example.data.entity.IrrigationScheduleEntity
 import com.example.lib.JalaliDateHelper
+import com.example.lib.NotificationHelper
 import com.example.lib.NumberFormatHelper
+import com.example.lib.PersianDateTimeFormatter
 import com.example.lib.WorkforceCalculator
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -42,6 +45,7 @@ import java.util.UUID
 
 class DataGateway(context: Context) {
 
+    val appContext: Context = context.applicationContext
     private val db = AppDatabase.getDatabase(context)
     private val dao = db.appDao()
 
@@ -675,19 +679,25 @@ class DataGateway(context: Context) {
         title: String,
         farmId: String?,
         plotId: String?,
+        plotIds: List<String> = emptyList(),
         startDate: String,
         endDate: String,
         priority: String,
         assigneePersonIds: List<String>,
         assigneeCrewId: String? = null,
         tagId: String?,
-        note: String
+        note: String,
+        reminderTime: String? = null,
+        reminderEnabled: Boolean = false
     ): TaskEntity = withContext(Dispatchers.IO) {
         val now = Instant.now().toString()
+        val effectivePlotId = if (plotIds.isNotEmpty()) plotIds.first() else plotId
+        val effectivePlotIds = if (plotIds.isNotEmpty()) plotIds else if (plotId != null) listOf(plotId) else emptyList()
         val task = TaskEntity(
             title = title.trim(),
             farmId = farmId,
-            plotId = plotId,
+            plotId = effectivePlotId,
+            plotIds = JSONArray(effectivePlotIds).toString(),
             startDate = startDate,
             endDate = endDate,
             priority = priority,
@@ -696,12 +706,29 @@ class DataGateway(context: Context) {
             tagId = tagId,
             note = note.trim(),
             status = "open",
+            reminderTime = reminderTime,
+            reminderEnabled = reminderEnabled,
             closedAt = null,
             rescheduleCount = 0,
             createdAt = now,
             updatedAt = now
         )
         dao.insertTask(task)
+
+        if (reminderEnabled) {
+            val triggerMillis = NotificationHelper.calculateTriggerEpochMillis(startDate, reminderTime ?: "08:00", 30)
+            val timeText = PersianDateTimeFormatter.formatPersianDateTime(startDate, reminderTime ?: "")
+            val farm = farmId?.let { dao.getFarmById(it) }
+            val farmName = farm?.name ?: "مزرعه"
+            NotificationHelper.scheduleReminder(
+                context = appContext,
+                reminderId = task.id,
+                title = "یادآور کار مزرعه: ${task.title}",
+                message = "محل: $farmName • زمان: $timeText",
+                triggerAtMillis = triggerMillis,
+                type = "task"
+            )
+        }
 
         // Increment tag usageCount if assigned (Decision 180)
         if (tagId != null) {
@@ -711,13 +738,288 @@ class DataGateway(context: Context) {
             }
         }
 
+        // Auto-record attendance for assigned workers if not manually recorded
+        val assignedWorkerIds = mutableListOf<String>()
+        assignedWorkerIds.addAll(assigneePersonIds)
+        if (assigneeCrewId != null) {
+            val members = dao.getAllCrewMembersList().filter { it.crewId == assigneeCrewId && it.active && !it.deleted }
+            assignedWorkerIds.addAll(members.map { it.personId })
+            val crew = dao.getCrewById(assigneeCrewId)
+            crew?.foremanId?.let { if (it.isNotBlank()) assignedWorkerIds.add(it) }
+        }
+        if (assignedWorkerIds.isNotEmpty()) {
+            autoRecordAttendanceForWork(
+                date = startDate,
+                workerIds = assignedWorkerIds.distinct(),
+                crewId = assigneeCrewId,
+                farmId = farmId,
+                plotId = effectivePlotId,
+                tagId = tagId,
+                sourceWorkDescription = title.trim()
+            )
+        }
+
         incrementUnsentChanges()
         task
+    }
+
+    suspend fun autoRecordAttendanceForWork(
+        date: String,
+        workerIds: List<String>,
+        crewId: String? = null,
+        farmId: String? = null,
+        plotId: String? = null,
+        tagId: String? = null,
+        sourceWorkDescription: String = "کار ثبت‌شده"
+    ) = withContext(Dispatchers.IO) {
+        if (workerIds.isEmpty() || date.isBlank()) return@withContext
+        val now = Instant.now().toString()
+        val allDateAttendances = dao.getAllAttendanceList().filter { it.date == date && !it.deleted }
+        val allAbsences = dao.getAllAbsencesList().filter { !it.deleted }
+
+        // 1. Identify workers who ALREADY have a manual attendance or absence on this date
+        val manualAtts = allDateAttendances.filter { att ->
+            !att.note.contains("خودکار") && !att.note.contains("اتوماتیک") && !att.createdBy.startsWith("auto")
+        }
+        val manuallyHandledWorkers = mutableSetOf<String>()
+
+        // Check active absences on this date
+        for (wId in workerIds) {
+            val hasAbsence = allAbsences.any { abs ->
+                abs.personId == wId && abs.fromDate <= date && date <= abs.toDate
+            }
+            if (hasAbsence) {
+                manuallyHandledWorkers.add(wId)
+            }
+        }
+
+        // Check manual attendances
+        for (att in manualAtts) {
+            try {
+                val arr = JSONArray(att.lines)
+                for (i in 0 until arr.length()) {
+                    val pId = arr.getJSONObject(i).optString("personId", "")
+                    if (pId.isNotBlank()) manuallyHandledWorkers.add(pId)
+                }
+                if (att.foreman != null) {
+                    val fObj = JSONObject(att.foreman)
+                    val pId = fObj.optString("personId", "")
+                    if (pId.isNotBlank()) manuallyHandledWorkers.add(pId)
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 2. Identify workers already present in existing auto-attendances on this date
+        val autoAtts = allDateAttendances.filter { att ->
+            att.note.contains("خودکار") || att.note.contains("اتوماتیک") || att.createdBy.startsWith("auto")
+        }
+        val alreadyInAutoWorkers = mutableSetOf<String>()
+        for (att in autoAtts) {
+            try {
+                val arr = JSONArray(att.lines)
+                for (i in 0 until arr.length()) {
+                    val pId = arr.getJSONObject(i).optString("personId", "")
+                    if (pId.isNotBlank()) alreadyInAutoWorkers.add(pId)
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Only add workers who have NO manual record and are NOT already in auto
+        val workersToAdd = workerIds.distinct().filter { wId ->
+            !manuallyHandledWorkers.contains(wId) && !alreadyInAutoWorkers.contains(wId)
+        }
+        if (workersToAdd.isEmpty()) return@withContext
+
+        val targetTagId = tagId ?: dao.getAllTagsList().firstOrNull { !it.hidden }?.id ?: ""
+        val (cp, ca) = getForemanCoefficients()
+        val allCrews = dao.getAllCrewsList().filter { it.active && !it.deleted }
+        val allCrewMembers = dao.getAllCrewMembersList().filter { it.active && !it.deleted }
+        val defaultCrewId = crewId ?: allCrews.firstOrNull()?.id ?: ""
+
+        val workersByCrew = workersToAdd.groupBy { wId ->
+            crewId ?: allCrewMembers.firstOrNull { it.personId == wId }?.crewId ?: defaultCrewId
+        }
+
+        for ((cId, wList) in workersByCrew) {
+            val existingAuto = autoAtts.firstOrNull { it.crewId == cId }
+            if (existingAuto != null) {
+                val arr = try { JSONArray(existingAuto.lines) } catch (_: Exception) { JSONArray() }
+                for (wId in wList) {
+                    arr.put(JSONObject().apply {
+                        put("personId", wId)
+                        put("ticks", 1)
+                    })
+                }
+                val updatedNote = if (!existingAuto.note.contains(sourceWorkDescription)) {
+                    "${existingAuto.note} • $sourceWorkDescription"
+                } else existingAuto.note
+                dao.updateAttendance(existingAuto.copy(
+                    lines = arr.toString(),
+                    note = updatedNote,
+                    updatedAt = now
+                ))
+            } else {
+                val linesArr = JSONArray().apply {
+                    for (wId in wList) {
+                        put(JSONObject().apply {
+                            put("personId", wId)
+                            put("ticks", 1)
+                        })
+                    }
+                }
+                val newAtt = AttendanceEntity(
+                    date = date,
+                    farmId = farmId,
+                    plotId = plotId,
+                    crewId = cId,
+                    tagId = targetTagId,
+                    lines = linesArr.toString(),
+                    coefPresent = cp,
+                    coefAbsent = ca,
+                    createdBy = "auto_work",
+                    note = "حضور خودکار بر مبنای کار ($sourceWorkDescription)",
+                    createdAt = now,
+                    updatedAt = now
+                )
+                dao.insertAttendance(newAtt)
+            }
+        }
+        incrementUnsentChanges()
+    }
+
+    suspend fun syncTaskCompletionAttendance(
+        task: TaskEntity,
+        date: String,
+        farmId: String?,
+        plotId: String?,
+        crewId: String,
+        tagId: String,
+        assignedWorkerIds: List<String>,
+        note: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val dateAttendances = dao.getAllAttendanceList().filter { it.date == date && !it.deleted }
+
+        // Find which workers are ALREADY present on this date
+        val alreadyPresentPersonIds = mutableSetOf<String>()
+        for (att in dateAttendances) {
+            try {
+                val arr = JSONArray(att.lines)
+                for (i in 0 until arr.length()) {
+                    val pId = arr.getJSONObject(i).getString("personId")
+                    val ticks = arr.getJSONObject(i).optInt("ticks", 1)
+                    if (ticks > 0) {
+                        alreadyPresentPersonIds.add(pId)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // Only add workers who are NOT already marked present on this date
+        val workersToAdd = assignedWorkerIds.filter { !alreadyPresentPersonIds.contains(it) }
+
+        if (workersToAdd.isEmpty()) {
+            incrementUnsentChanges()
+            return@withContext false
+        }
+
+        // Completing a task proves worker presence, clear any single-day absence on this date
+        val allAbsences = dao.getAllAbsencesList().filter { !it.deleted }
+        for (wId in assignedWorkerIds) {
+            val singleDayAbs = allAbsences.find { it.personId == wId && it.fromDate == date && it.toDate == date }
+            if (singleDayAbs != null) {
+                dao.updateAbsence(singleDayAbs.copy(deleted = true, deletedAt = now, updatedAt = now))
+            }
+        }
+
+        val existingCrewAtt = dateAttendances.find { it.crewId == crewId }
+        if (existingCrewAtt != null) {
+            val arr = try { JSONArray(existingCrewAtt.lines) } catch (_: Exception) { JSONArray() }
+            for (wId in workersToAdd) {
+                arr.put(JSONObject().apply {
+                    put("personId", wId)
+                    put("ticks", 1)
+                })
+            }
+            val updatedNote = if (existingCrewAtt.note.isNotBlank()) "${existingCrewAtt.note} • $note" else note
+            val updatedAtt = existingCrewAtt.copy(
+                lines = arr.toString(),
+                note = updatedNote,
+                updatedAt = now
+            )
+            dao.updateAttendance(updatedAtt)
+        } else {
+            val linesArr = JSONArray()
+            for (wId in workersToAdd) {
+                linesArr.put(JSONObject().apply {
+                    put("personId", wId)
+                    put("ticks", 1)
+                })
+            }
+            val newAtt = AttendanceEntity(
+                date = date,
+                farmId = farmId,
+                plotId = plotId,
+                crewId = crewId,
+                tagId = tagId,
+                lines = linesArr.toString(),
+                headcount = null,
+                countTicks = null,
+                foreman = null,
+                note = note,
+                createdAt = now,
+                updatedAt = now
+            )
+            dao.insertAttendance(newAtt)
+        }
+        incrementUnsentChanges()
+        true
     }
 
     suspend fun updateTask(task: TaskEntity) = withContext(Dispatchers.IO) {
         val now = Instant.now().toString()
         dao.updateTask(task.copy(updatedAt = now))
+
+        val assignedWorkerIds = mutableListOf<String>()
+        try {
+            val arr = JSONArray(task.assigneePersonIds)
+            for (i in 0 until arr.length()) assignedWorkerIds.add(arr.getString(i))
+        } catch (_: Exception) {}
+        if (task.assigneeCrewId != null) {
+            val members = dao.getAllCrewMembersList().filter { it.crewId == task.assigneeCrewId && it.active && !it.deleted }
+            assignedWorkerIds.addAll(members.map { it.personId })
+            val crew = dao.getCrewById(task.assigneeCrewId)
+            crew?.foremanId?.let { if (it.isNotBlank()) assignedWorkerIds.add(it) }
+        }
+        if (assignedWorkerIds.isNotEmpty()) {
+            autoRecordAttendanceForWork(
+                date = task.startDate,
+                workerIds = assignedWorkerIds.distinct(),
+                crewId = task.assigneeCrewId,
+                farmId = task.farmId,
+                plotId = task.plotId,
+                tagId = task.tagId,
+                sourceWorkDescription = task.title
+            )
+        }
+
+        if (task.reminderEnabled && task.status == "open") {
+            val triggerMillis = NotificationHelper.calculateTriggerEpochMillis(task.startDate, task.reminderTime ?: "08:00", 30)
+            val timeText = PersianDateTimeFormatter.formatPersianDateTime(task.startDate, task.reminderTime ?: "")
+            val farm = task.farmId?.let { dao.getFarmById(it) }
+            val farmName = farm?.name ?: "مزرعه"
+            NotificationHelper.scheduleReminder(
+                context = appContext,
+                reminderId = task.id,
+                title = "یادآور کار مزرعه: ${task.title}",
+                message = "محل: $farmName • زمان: $timeText",
+                triggerAtMillis = triggerMillis,
+                type = "task"
+            )
+        } else {
+            NotificationHelper.cancelReminder(appContext, task.id)
+        }
+
         incrementUnsentChanges()
     }
 
@@ -727,6 +1029,34 @@ class DataGateway(context: Context) {
         val closedAt = if (newStatus == "open") null else now
         val updated = task.copy(status = newStatus, closedAt = closedAt, updatedAt = now)
         dao.updateTask(updated)
+
+        if (newStatus == "done") {
+            NotificationHelper.cancelReminder(appContext, task.id)
+            val assignedWorkerIds = mutableListOf<String>()
+            try {
+                val arr = JSONArray(task.assigneePersonIds)
+                for (i in 0 until arr.length()) assignedWorkerIds.add(arr.getString(i))
+            } catch (_: Exception) {}
+            if (task.assigneeCrewId != null) {
+                val members = dao.getAllCrewMembersList().filter { it.crewId == task.assigneeCrewId && it.active && !it.deleted }
+                assignedWorkerIds.addAll(members.map { it.personId })
+                val crew = dao.getCrewById(task.assigneeCrewId)
+                crew?.foremanId?.let { if (it.isNotBlank()) assignedWorkerIds.add(it) }
+            }
+            if (assignedWorkerIds.isNotEmpty()) {
+                val effectiveDate = if (task.startDate.isNotBlank()) task.startDate else JalaliDateHelper.today().isoFormat
+                autoRecordAttendanceForWork(
+                    date = effectiveDate,
+                    workerIds = assignedWorkerIds.distinct(),
+                    crewId = task.assigneeCrewId,
+                    farmId = task.farmId,
+                    plotId = task.plotId,
+                    tagId = task.tagId,
+                    sourceWorkDescription = "تکمیل کار: ${task.title}"
+                )
+            }
+        }
+
         incrementUnsentChanges()
         updated
     }
@@ -751,6 +1081,7 @@ class DataGateway(context: Context) {
         val task = dao.getTaskById(taskId) ?: return@withContext
         val now = Instant.now().toString()
         dao.updateTask(task.copy(deleted = true, deletedAt = now, updatedAt = now))
+        NotificationHelper.cancelReminder(appContext, taskId)
         incrementUnsentChanges()
     }
 
@@ -926,6 +1257,168 @@ class DataGateway(context: Context) {
         dao.setSetting(SettingEntity("foremanCoefficients", obj.toString()))
     }
 
+    suspend fun replaceAutoAttendancesWithManual(date: String, affectedPersonIds: Set<String>) = withContext(Dispatchers.IO) {
+        if (affectedPersonIds.isEmpty()) return@withContext
+        val now = Instant.now().toString()
+        val dateAttendances = dao.getAllAttendanceList().filter { it.date == date && !it.deleted }
+
+        val autoAttendances = dateAttendances.filter { att ->
+            att.note.contains("خودکار") || att.note.contains("اتوماتیک") || att.createdBy.startsWith("auto")
+        }
+
+        for (autoAtt in autoAttendances) {
+            try {
+                val linesArr = JSONArray(autoAtt.lines)
+                val newLinesArr = JSONArray()
+                var modified = false
+
+                for (i in 0 until linesArr.length()) {
+                    val obj = linesArr.getJSONObject(i)
+                    val pId = obj.optString("personId", "")
+                    if (affectedPersonIds.contains(pId)) {
+                        modified = true
+                    } else {
+                        newLinesArr.put(obj)
+                    }
+                }
+
+                if (modified) {
+                    if (newLinesArr.length() == 0) {
+                        dao.updateAttendance(autoAtt.copy(lines = "[]", deleted = true, deletedAt = now, updatedAt = now))
+                    } else {
+                        dao.updateAttendance(autoAtt.copy(lines = newLinesArr.toString(), updatedAt = now))
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    suspend fun toggleWorkerAttendanceForDate(
+        date: String,
+        personId: String,
+        isPresent: Boolean,
+        ticks: Int = 1
+    ) = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val affected = setOf(personId)
+
+        replaceAutoAttendancesWithManual(date, affected)
+
+        val dateAttendances = dao.getAllAttendanceList().filter { it.date == date && !it.deleted }
+        val crewMembers = dao.getAllCrewMembersList().filter { it.personId == personId && it.active && !it.deleted }
+        val personCrewId = crewMembers.firstOrNull()?.crewId ?: dao.getAllCrewsList().firstOrNull { it.active && !it.deleted }?.id ?: ""
+        val effectiveTagId = dao.getAllTagsList().firstOrNull { !it.hidden }?.id ?: ""
+
+        val manualAtt = dateAttendances.find { att ->
+            !att.note.contains("خودکار") && !att.note.contains("اتوماتیک") && !att.createdBy.startsWith("auto") &&
+            (att.crewId == personCrewId || try {
+                val arr = JSONArray(att.lines)
+                (0 until arr.length()).any { arr.getJSONObject(it).optString("personId") == personId }
+            } catch (_: Exception) { false })
+        }
+
+        if (isPresent) {
+            // If they had an active single-day absence on this date, clear it since they are present
+            val allAbsences = dao.getAllAbsencesList().filter { !it.deleted }
+            val singleDayAbs = allAbsences.find { it.personId == personId && it.fromDate == date && it.toDate == date }
+            if (singleDayAbs != null) {
+                dao.updateAbsence(singleDayAbs.copy(deleted = true, deletedAt = now, updatedAt = now))
+            }
+
+            if (manualAtt != null) {
+                val arr = try { JSONArray(manualAtt.lines) } catch (_: Exception) { JSONArray() }
+                var found = false
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    if (o.optString("personId") == personId) {
+                        o.put("ticks", ticks)
+                        found = true
+                        break
+                    }
+                }
+                if (!found) {
+                    arr.put(JSONObject().apply {
+                        put("personId", personId)
+                        put("ticks", ticks)
+                    })
+                }
+                dao.updateAttendance(manualAtt.copy(lines = arr.toString(), updatedAt = now))
+            } else {
+                val newLines = JSONArray().apply {
+                    put(JSONObject().apply {
+                        put("personId", personId)
+                        put("ticks", ticks)
+                    })
+                }.toString()
+
+                val (cp, ca) = getForemanCoefficients()
+                val newAtt = AttendanceEntity(
+                    date = date,
+                    crewId = personCrewId,
+                    tagId = effectiveTagId,
+                    lines = newLines,
+                    coefPresent = cp,
+                    coefAbsent = ca,
+                    createdBy = "manual",
+                    note = "ثبت دستی حضور کارگر",
+                    createdAt = now,
+                    updatedAt = now
+                )
+                dao.insertAttendance(newAtt)
+            }
+        } else {
+            // Absent: Remove from manual attendance lines on this date
+            if (manualAtt != null) {
+                val arr = try { JSONArray(manualAtt.lines) } catch (_: Exception) { JSONArray() }
+                val newArr = JSONArray()
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    if (o.optString("personId") != personId) {
+                        newArr.put(o)
+                    }
+                }
+                if (newArr.length() == 0) {
+                    dao.updateAttendance(manualAtt.copy(lines = "[]", deleted = true, deletedAt = now, updatedAt = now))
+                } else {
+                    dao.updateAttendance(manualAtt.copy(lines = newArr.toString(), updatedAt = now))
+                }
+            }
+
+            // Record an unpaid absence for this day so manual absence is strictly preserved against auto-registration
+            val allAbs = dao.getAllAbsencesList().filter { !it.deleted }
+            val existingAbs = allAbs.find { it.personId == personId && it.fromDate <= date && date <= it.toDate }
+            if (existingAbs == null) {
+                dao.insertAbsence(
+                    AbsenceEntity(
+                        personId = personId,
+                        fromDate = date,
+                        toDate = date,
+                        type = "unpaid",
+                        note = "ثبت غیبت دستی",
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                )
+            }
+        }
+        incrementUnsentChanges()
+    }
+
+    suspend fun toggleCrewAttendanceForDate(
+        date: String,
+        crewId: String,
+        isPresent: Boolean
+    ) = withContext(Dispatchers.IO) {
+        val crew = dao.getCrewById(crewId)
+        val members = dao.getAllCrewMembersList().filter { it.crewId == crewId && it.active && !it.deleted }
+        val allPersonIds = mutableSetOf<String>()
+        members.forEach { allPersonIds.add(it.personId) }
+        crew?.foremanId?.let { if (it.isNotBlank()) allPersonIds.add(it) }
+        for (pId in allPersonIds) {
+            toggleWorkerAttendanceForDate(date, pId, isPresent)
+        }
+    }
+
     suspend fun createAttendance(
         date: String,
         farmId: String?,
@@ -939,6 +1432,19 @@ class DataGateway(context: Context) {
         note: String
     ): AttendanceEntity = withContext(Dispatchers.IO) {
         val now = Instant.now().toString()
+
+        val personIdsInLines = mutableSetOf<String>()
+        try {
+            val arr = JSONArray(lines)
+            for (i in 0 until arr.length()) {
+                val pId = arr.getJSONObject(i).optString("personId", "")
+                if (pId.isNotBlank()) personIdsInLines.add(pId)
+            }
+        } catch (_: Exception) {}
+        if (personIdsInLines.isNotEmpty()) {
+            replaceAutoAttendancesWithManual(date, personIdsInLines)
+        }
+
         val (cp, ca) = getForemanCoefficients()
         val att = AttendanceEntity(
             date = date,
@@ -1065,6 +1571,26 @@ class DataGateway(context: Context) {
             dao.updateTag(tag.copy(usageCount = tag.usageCount + 1, updatedAt = now))
         }
 
+        // Auto-record attendance for piecework workers if not manually recorded
+        val pwWorkerIds = mutableListOf<String>()
+        try {
+            val arr = JSONArray(lines)
+            for (i in 0 until arr.length()) {
+                val pId = arr.getJSONObject(i).optString("personId", "")
+                if (pId.isNotBlank()) pwWorkerIds.add(pId)
+            }
+        } catch (_: Exception) {}
+        if (pwWorkerIds.isNotEmpty()) {
+            autoRecordAttendanceForWork(
+                date = date,
+                workerIds = pwWorkerIds.distinct(),
+                farmId = farmId,
+                plotId = plotId,
+                tagId = tagId,
+                sourceWorkDescription = "کار پیمانی: ${jobType.trim()}"
+            )
+        }
+
         incrementUnsentChanges()
         pw
     }
@@ -1090,6 +1616,26 @@ class DataGateway(context: Context) {
             dao.insertHistory(hist)
         }
         dao.updatePieceWork(pw.copy(updatedAt = now))
+
+        val pwWorkerIds = mutableListOf<String>()
+        try {
+            val arr = JSONArray(pw.lines)
+            for (i in 0 until arr.length()) {
+                val pId = arr.getJSONObject(i).optString("personId", "")
+                if (pId.isNotBlank()) pwWorkerIds.add(pId)
+            }
+        } catch (_: Exception) {}
+        if (pwWorkerIds.isNotEmpty()) {
+            autoRecordAttendanceForWork(
+                date = pw.date,
+                workerIds = pwWorkerIds.distinct(),
+                farmId = pw.farmId,
+                plotId = pw.plotId,
+                tagId = pw.tagId,
+                sourceWorkDescription = "کار پیمانی: ${pw.jobType.trim()}"
+            )
+        }
+
         incrementUnsentChanges()
     }
 
@@ -2266,6 +2812,150 @@ class DataGateway(context: Context) {
     suspend fun insertEmployment(e: EmploymentEntity) = withContext(Dispatchers.IO) { dao.insertEmployment(e) }
     suspend fun updateEmployment(e: EmploymentEntity) = withContext(Dispatchers.IO) { dao.updateEmployment(e) }
 
+    suspend fun saveEmploymentWithRetroactive(
+        employment: EmploymentEntity,
+        salary: Long,
+        applyUpToToday: Boolean
+    ) = withContext(Dispatchers.IO) {
+        val existing = dao.getAllEmploymentsList().find { it.personId == employment.personId && !it.deleted }
+        val now = Instant.now().toString()
+        val savedEmployment = if (existing != null) {
+            val u = employment.copy(id = existing.id, updatedAt = now)
+            dao.updateEmployment(u)
+            u
+        } else {
+            dao.insertEmployment(employment)
+            employment
+        }
+
+        // Insert salary rate
+        val effectiveFrom = if (employment.salaryFromMonth.isNotBlank()) "${employment.salaryFromMonth}-01" else JalaliDateHelper.today().isoFormat
+        dao.insertSalaryRate(
+            SalaryRateEntity(
+                personId = employment.personId,
+                monthlySalary = salary,
+                effectiveFrom = effectiveFrom,
+                createdAt = now,
+                updatedAt = now
+            )
+        )
+
+        if (applyUpToToday && employment.salaryFromMonth.isNotBlank()) {
+            val currentJalali = JalaliDateHelper.today()
+            val startParts = employment.salaryFromMonth.split("-")
+            var yr = startParts[0].toIntOrNull() ?: currentJalali.year
+            var mo = startParts.getOrNull(1)?.toIntOrNull() ?: currentJalali.month
+
+            var salaryType = dao.getExpenseTypeByBuiltInKey("salary")
+            if (salaryType == null) {
+                val newType = ExpenseTypeEntity(name = "حقوق و دستمزد", builtInKey = "salary")
+                dao.insertExpenseType(newType)
+                salaryType = newType
+            }
+
+            // Find or create default crew for fixed workers so attendance is cleanly assigned
+            val allCrews = dao.getAllCrewsList()
+            var fixedCrew = allCrews.find { it.name.contains("کارگران ثابت") && !it.deleted }
+            if (fixedCrew == null) {
+                fixedCrew = CrewEntity(name = "کارگران ثابت", kind = "members", foremanId = null)
+                dao.insertCrew(fixedCrew)
+            }
+            val crewMembers = dao.getAllCrewMembersList()
+            if (crewMembers.none { it.crewId == fixedCrew.id && it.personId == employment.personId && !it.deleted }) {
+                dao.insertCrewMember(CrewMemberEntity(crewId = fixedCrew.id, personId = employment.personId))
+            }
+            ensureWorkerRole(employment.personId)
+
+            val tag = dao.getAllTagsList().firstOrNull { !it.hidden }
+            val tagId = tag?.id ?: ""
+
+            while (yr < currentJalali.year || (yr == currentJalali.year && mo <= currentJalali.month)) {
+                val monthKey = "%04d-%02d".format(yr, mo)
+                val existingPosting = dao.getSalaryPosting(employment.personId, monthKey)
+
+                val gDate = JalaliDateHelper.toGregorian(yr, mo, 1)
+                val dateIso = JalaliDateHelper.toIsoDate(gDate)
+
+                if (existingPosting == null && salary > 0) {
+                    val exp = ExpenseEntity(
+                        date = dateIso,
+                        amount = salary,
+                        typeId = salaryType.id,
+                        workerIds = JSONArray(listOf(employment.personId)).toString(),
+                        systemKind = "salary",
+                        salaryRef = monthKey,
+                        note = "حقوق ماهانه $monthKey",
+                        createdAt = now,
+                        updatedAt = now
+                    )
+                    dao.insertExpense(exp)
+
+                    dao.insertLedgerEntry(
+                        LedgerEntryEntity(
+                            accountType = "person",
+                            accountId = employment.personId,
+                            date = dateIso,
+                            kind = "credit",
+                            amount = salary,
+                            note = "بستانکاری حقوق ماهانه $monthKey",
+                            createdAt = now,
+                            updatedAt = now
+                        )
+                    )
+
+                    dao.insertSalaryPosting(
+                        SalaryPostingEntity(
+                            personId = employment.personId,
+                            month = monthKey,
+                            computedAmount = salary,
+                            expenseId = exp.id,
+                            postedAt = now,
+                            createdAt = now,
+                            updatedAt = now
+                        )
+                    )
+                }
+
+                // Register attendance for this month if not already present
+                val monthAttendances = dao.getAllAttendanceList().filter { it.date.startsWith(dateIso.take(7)) }
+                val alreadyPresent = monthAttendances.any { att ->
+                    try {
+                        val arr = JSONArray(att.lines)
+                        (0 until arr.length()).any { arr.getJSONObject(it).getString("personId") == employment.personId }
+                    } catch (_: Exception) { false }
+                }
+
+                if (!alreadyPresent) {
+                    val lines = JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("personId", employment.personId)
+                            put("ticks", 1)
+                        })
+                    }.toString()
+
+                    dao.insertAttendance(
+                        AttendanceEntity(
+                            date = dateIso,
+                            crewId = fixedCrew.id,
+                            tagId = tagId,
+                            lines = lines,
+                            note = "حضور خودکار بر مبنای حقوق ماهانه $monthKey (امکان ثبت دستی غیبت وجود دارد)",
+                            createdAt = now,
+                            updatedAt = now
+                        )
+                    )
+                }
+
+                mo++
+                if (mo > 12) {
+                    mo = 1
+                    yr++
+                }
+            }
+        }
+        incrementUnsentChanges()
+    }
+
     fun getAllSalaryRatesFlow(): Flow<List<SalaryRateEntity>> = dao.getAllSalaryRates().flowOn(Dispatchers.IO)
     suspend fun insertSalaryRate(sr: SalaryRateEntity) = withContext(Dispatchers.IO) { dao.insertSalaryRate(sr) }
 
@@ -2283,5 +2973,125 @@ class DataGateway(context: Context) {
     fun getAllProductsFlow(): Flow<List<ProductEntity>> = dao.getAllProducts().flowOn(Dispatchers.IO)
     suspend fun insertProduct(p: ProductEntity) = withContext(Dispatchers.IO) { dao.insertProduct(p) }
     suspend fun updateProduct(p: ProductEntity) = withContext(Dispatchers.IO) { dao.updateProduct(p) }
+
+    // --- IRRIGATION SCHEDULES ---
+    fun getAllIrrigationSchedulesFlow(): Flow<List<IrrigationScheduleEntity>> =
+        dao.getAllIrrigationSchedules().flowOn(Dispatchers.IO)
+
+    suspend fun getAllIrrigationSchedulesList(): List<IrrigationScheduleEntity> =
+        withContext(Dispatchers.IO) { dao.getAllIrrigationSchedulesList() }
+
+    suspend fun createIrrigationSchedule(
+        farmId: String,
+        plotId: String,
+        irrigatorPersonId: String?,
+        date: String,
+        time: String,
+        durationHours: Double?,
+        waterSource: String?,
+        reminderEnabled: Boolean,
+        reminderMinutesBefore: Int,
+        note: String
+    ): IrrigationScheduleEntity = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val schedule = IrrigationScheduleEntity(
+            farmId = farmId,
+            plotId = plotId,
+            irrigatorPersonId = irrigatorPersonId,
+            date = date,
+            time = time,
+            durationHours = durationHours,
+            waterSource = waterSource,
+            status = "scheduled",
+            reminderEnabled = reminderEnabled,
+            reminderMinutesBefore = reminderMinutesBefore,
+            note = note.trim(),
+            smsSent = false,
+            createdAt = now,
+            updatedAt = now
+        )
+        dao.insertIrrigationSchedule(schedule)
+
+        // Schedule notification alarm if enabled
+        if (reminderEnabled) {
+            val farm = dao.getFarmById(farmId)
+            val plot = dao.getPlotById(plotId)
+            val irrigator = irrigatorPersonId?.let { dao.getPersonById(it) }
+            val triggerMillis = NotificationHelper.calculateTriggerEpochMillis(date, time, reminderMinutesBefore)
+            val locTitle = "${farm?.name ?: "مزرعه"} - ${plot?.name ?: "قطعه"}"
+            val irrigatorText = irrigator?.name?.let { "مسئول آبیاری: $it • " } ?: ""
+            val timeText = PersianDateTimeFormatter.formatPersianDateTime(date, time)
+            val body = "$irrigatorText$timeText"
+
+            NotificationHelper.scheduleReminder(
+                context = appContext,
+                reminderId = schedule.id,
+                title = "زمان آبیاری: $locTitle",
+                message = body,
+                triggerAtMillis = triggerMillis,
+                type = "irrigation"
+            )
+        }
+
+        incrementUnsentChanges()
+        schedule
+    }
+
+    suspend fun updateIrrigationSchedule(
+        schedule: IrrigationScheduleEntity
+    ) = withContext(Dispatchers.IO) {
+        val now = Instant.now().toString()
+        val updated = schedule.copy(updatedAt = now)
+        dao.updateIrrigationSchedule(updated)
+
+        if (updated.reminderEnabled && updated.status == "scheduled") {
+            val farm = dao.getFarmById(updated.farmId)
+            val plot = dao.getPlotById(updated.plotId)
+            val irrigator = updated.irrigatorPersonId?.let { dao.getPersonById(it) }
+            val triggerMillis = NotificationHelper.calculateTriggerEpochMillis(updated.date, updated.time, updated.reminderMinutesBefore)
+            val locTitle = "${farm?.name ?: "مزرعه"} - ${plot?.name ?: "قطعه"}"
+            val irrigatorText = irrigator?.name?.let { "مسئول آبیاری: $it • " } ?: ""
+            val timeText = PersianDateTimeFormatter.formatPersianDateTime(updated.date, updated.time)
+            val body = "$irrigatorText$timeText"
+
+            NotificationHelper.scheduleReminder(
+                context = appContext,
+                reminderId = updated.id,
+                title = "زمان آبیاری: $locTitle",
+                message = body,
+                triggerAtMillis = triggerMillis,
+                type = "irrigation"
+            )
+        } else {
+            NotificationHelper.cancelReminder(appContext, updated.id)
+        }
+
+        incrementUnsentChanges()
+    }
+
+    suspend fun toggleIrrigationStatus(scheduleId: String, newStatus: String) = withContext(Dispatchers.IO) {
+        val s = dao.getIrrigationScheduleById(scheduleId) ?: return@withContext
+        val now = Instant.now().toString()
+        dao.updateIrrigationSchedule(s.copy(status = newStatus, updatedAt = now))
+        if (newStatus != "scheduled") {
+            NotificationHelper.cancelReminder(appContext, s.id)
+        }
+        incrementUnsentChanges()
+    }
+
+    suspend fun markIrrigationSmsSent(scheduleId: String) = withContext(Dispatchers.IO) {
+        val s = dao.getIrrigationScheduleById(scheduleId) ?: return@withContext
+        val now = Instant.now().toString()
+        dao.updateIrrigationSchedule(s.copy(smsSent = true, updatedAt = now))
+        incrementUnsentChanges()
+    }
+
+    suspend fun deleteIrrigationSchedule(scheduleId: String) = withContext(Dispatchers.IO) {
+        val s = dao.getIrrigationScheduleById(scheduleId) ?: return@withContext
+        val now = Instant.now().toString()
+        dao.updateIrrigationSchedule(s.copy(deleted = true, deletedAt = now, updatedAt = now))
+        NotificationHelper.cancelReminder(appContext, s.id)
+        incrementUnsentChanges()
+    }
 }
 
